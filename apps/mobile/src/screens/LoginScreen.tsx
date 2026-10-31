@@ -47,9 +47,9 @@ const ROLE_CONFIG = {
 };
 
 const QUICK_FILL = [
-    { label: 'She / Her', user: 'victim',   pass: 'shesafe', role: 'victim'   },
-    { label: 'Guardian',  user: 'guardian', pass: 'shesafe', role: 'guardian' },
-    { label: 'Police',    user: 'police',   pass: 'shesafe', role: 'police'   },
+    { label: 'She / Her', user: 'victim@demo.shesafe',   pass: 'DemoOnly2024!', role: 'victim'   },
+    { label: 'Guardian',  user: 'guardian@demo.shesafe', pass: 'DemoOnly2024!', role: 'guardian' },
+    { label: 'Police',    user: 'police@demo.shesafe',   pass: 'DemoOnly2024!', role: 'police'   },
 ];
 
 // ─── PIN SETUP STEP (victim sets their own code) ──────────────
@@ -270,9 +270,9 @@ export default function LoginScreen({ navigation }: any) {
     useEffect(() => {
         const u = username.toLowerCase().trim();
         setDetectedRole(
-            u === 'victim' ? 'victim' :
-            u === 'guardian' ? 'guardian' :
-            u === 'police' ? 'police' : null
+            u.includes('victim') ? 'victim' :
+            u.includes('guardian') ? 'guardian' :
+            u.includes('police') ? 'police' : null
         );
         setError('');
     }, [username]);

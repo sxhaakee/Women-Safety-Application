@@ -1,4 +1,5 @@
 import Constants from 'expo-constants';
+import { supabase } from './supabase';
 
 function getHostIp(): string {
     try {
@@ -57,27 +58,72 @@ export interface SheSafeAlert {
 // ─── AUTH ─────────────────────────────────────────────────────
 
 export async function loginUser(
-    username: string,
+    usernameOrEmail: string,
     password: string,
 ): Promise<SheSafeUser | null> {
     const time = new Date().toLocaleTimeString();
-    console.log(`[DEBUG AUTH ${time}] 🔑 Attempting login for username: "${username}" at ${BACKEND_URL}/api/login`);
+    let email = usernameOrEmail.toLowerCase().trim();
+    if (!email.includes('@')) {
+        email = `${email}@demo.shesafe`;
+    }
+
+    console.log(`[DEBUG AUTH ${time}] 🔑 Supabase auth attempting login for: "${email}"`);
+
     try {
-        const res = await fetch(`${BACKEND_URL}/api/login`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: username.toLowerCase().trim(), password }),
+        let authUser: any = null;
+
+        const { data, error } = await supabase.auth.signInWithPassword({
+            email,
+            password,
         });
-        console.log(`[DEBUG AUTH ${time}] 📥 Login HTTP Status: ${res.status}`);
-        if (!res.ok) {
-            console.log(`[DEBUG AUTH ${time}] ❌ Login HTTP failed with status ${res.status}`);
-            return null;
+
+        if (error || !data.user) {
+            console.log(`[DEBUG AUTH ${time}] ⚠️ Primary Supabase login failed: ${error?.message}`);
+            // Also try fallback to DemoOnly2024! if someone entered 'shesafe'
+            if (password === 'shesafe') {
+                const retry = await supabase.auth.signInWithPassword({
+                    email,
+                    password: 'DemoOnly2024!',
+                });
+                if (retry.data?.user) {
+                    authUser = retry.data.user;
+                }
+            }
+            if (!authUser) {
+                return null;
+            }
+        } else {
+            authUser = data.user;
         }
-        const data = await res.json();
-        console.log(`[DEBUG AUTH ${time}] ✅ Login Success! User role: ${data.user?.role}, Name: ${data.user?.name}`);
-        return data.user as SheSafeUser;
+
+        console.log(`[DEBUG AUTH ${time}] ✅ Supabase Auth Success! User ID: ${authUser.id}`);
+
+        // Fetch user profile from public.profiles
+        const { data: profile, error: profileErr } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', authUser.id)
+            .single();
+
+        if (profileErr) {
+            console.log(`[DEBUG AUTH ${time}] ⚠️ Could not fetch profile: ${profileErr.message}`);
+        }
+
+        const role = (profile?.role || (email.includes('police') ? 'police' : email.includes('guardian') ? 'guardian' : 'victim')) as 'victim' | 'guardian' | 'police';
+        const name = profile?.full_name || (role === 'victim' ? 'DEMO Victim' : role === 'guardian' ? 'DEMO Guardian' : 'DEMO Officer');
+
+        const user: SheSafeUser = {
+            id: authUser.id,
+            username: email.split('@')[0],
+            role,
+            name,
+            phone: profile?.phone || '',
+            pin: '',
+        };
+
+        return user;
     } catch (e: any) {
-        console.error(`[DEBUG AUTH ${time}] 💥 Login FETCH ERROR: ${e?.message || e}`);
+        console.error(`[DEBUG AUTH ${time}] 💥 Supabase login error:`, e?.message || e);
         return null;
     }
 }
