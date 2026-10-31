@@ -30,7 +30,7 @@ select
   )::geography,
   (array['poor_lighting','harassment','stalking','isolated','other'])[1 + floor(random()*5)::int],
   1 + floor(random()*5)::int,
-  digest(extensions.gen_random_bytes(16), 'sha256'),
+  extensions.digest(extensions.gen_random_bytes(16), 'sha256'),
   now() - (random() * interval '25 days'),
   now() + interval '30 days'
 from generate_series(1, 40);
