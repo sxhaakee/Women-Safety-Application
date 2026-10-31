@@ -187,30 +187,69 @@ export async function resolveAlert(alert_id: string) {
     }
 }
 
+function mapSupabaseAlert(row: any): SheSafeAlert {
+    const profile = row.profiles || {};
+    return {
+        id: row.id,
+        victim_id: row.victim_id,
+        victim_name: profile.full_name || 'Priya Sharma (Demo)',
+        victim_phone: profile.phone || '+91 98765 43210',
+        status: (row.status === 'active' || row.status === 'acknowledged' || row.status === 'dispatched') ? 'active' : 'resolved',
+        lat: 12.9141,
+        lng: 74.8560,
+        address: 'Mangaluru Central',
+        triggered_at: row.started_at || new Date().toISOString(),
+        resolved_at: row.resolved_at || null,
+    };
+}
+
 export async function getActiveAlerts(): Promise<SheSafeAlert[]> {
     const time = new Date().toLocaleTimeString();
-    console.log(`[DEBUG API ${time}] 📡 Fetching Active Alerts from ${BACKEND_URL}/api/alerts/active`);
+    try {
+        const { data, error } = await supabase
+            .from('alerts')
+            .select('*, profiles:victim_id(full_name, phone)')
+            .in('status', ['active', 'acknowledged', 'dispatched'])
+            .order('started_at', { ascending: false });
+
+        if (!error && data) {
+            console.log(`[DEBUG API ${time}] 📥 Active Alerts Count (Supabase): ${data.length}`);
+            return data.map(mapSupabaseAlert);
+        }
+    } catch {
+        // Fallback to local HTTP if needed
+    }
+
     try {
         const res = await fetch(`${BACKEND_URL}/api/alerts/active`);
         const data = await res.json();
-        console.log(`[DEBUG API ${time}] 📥 Active Alerts Count: ${data.alerts?.length || 0}`);
         return data.alerts || [];
-    } catch (e: any) {
-        console.error(`[DEBUG API ${time}] 💥 Fetch Active Alerts ERROR: ${e?.message || e}`);
+    } catch {
         return [];
     }
 }
 
 export async function getAllAlerts(): Promise<SheSafeAlert[]> {
     const time = new Date().toLocaleTimeString();
-    console.log(`[DEBUG API ${time}] 📋 Fetching All Alert History from ${BACKEND_URL}/api/alerts`);
+    try {
+        const { data, error } = await supabase
+            .from('alerts')
+            .select('*, profiles:victim_id(full_name, phone)')
+            .order('started_at', { ascending: false });
+
+        if (!error && data) {
+            console.log(`[DEBUG API ${time}] 📥 Total Alerts Count (Supabase): ${data.length}`);
+            return data.map(mapSupabaseAlert);
+        }
+    } catch {
+        // Fallback to local HTTP if needed
+    }
+
     try {
         const res = await fetch(`${BACKEND_URL}/api/alerts`);
         const data = await res.json();
-        console.log(`[DEBUG API ${time}] 📥 Total Alerts Count: ${data.alerts?.length || 0}`);
         return data.alerts || [];
-    } catch (e: any) {
-        console.error(`[DEBUG API ${time}] 💥 Fetch All Alerts ERROR: ${e?.message || e}`);
+    } catch {
         return [];
     }
 }
@@ -234,61 +273,76 @@ export class SheSafeWS {
     private onMsg: (msg: WsMessage) => void;
     private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
     private shouldReconnect = true;
+    private realtimeChannel: any = null;
 
     constructor(role: string, onMsg: (msg: WsMessage) => void) {
         this.role = role;
         this.onMsg = onMsg;
-        console.log(`[DEBUG WS INSTANCE] 🛠️ Created SheSafeWS client for role: [${role}] targeting ${WS_URL}`);
+        console.log(`[DEBUG WS INSTANCE] 🛠️ Created SheSafeWS client for role: [${role}]`);
     }
 
     connect() {
         this.shouldReconnect = true;
-        console.log(`[DEBUG WS CONNECT] 🔌 Initiating WebSocket connection for [${this.role}]...`);
+        console.log(`[DEBUG WS CONNECT] 🔌 Initiating Realtime connection for role [${this.role}]...`);
+
+        // 1. Supabase Realtime Channel
+        try {
+            this.realtimeChannel = supabase
+                .channel(`shesafe_alerts_${this.role}`)
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'alerts' }, (payload) => {
+                    const row = payload.new as any;
+                    if (row) {
+                        const alert = mapSupabaseAlert(row);
+                        if (row.status === 'resolved' || row.status === 'cancelled') {
+                            this.onMsg({ type: 'ALERT_RESOLVED', alert });
+                        } else {
+                            this.onMsg({ type: 'ALERT_FIRED', alert });
+                        }
+                    }
+                })
+                .subscribe((status) => {
+                    if (status === 'SUBSCRIBED') {
+                        console.log(`[DEBUG REALTIME] ✅ Supabase Realtime connected for role [${this.role}]`);
+                        this.onMsg({ type: 'REGISTERED', role: this.role });
+                    }
+                });
+        } catch (e) {
+            console.warn('[DEBUG WS REALTIME] Realtime subscription init error:', e);
+        }
+
+        // 2. Optional Local WS
         this._open();
     }
 
     private _open() {
+        if (!this.shouldReconnect) return;
         try {
             this.ws = new WebSocket(WS_URL);
 
             this.ws.onopen = () => {
-                const time = new Date().toLocaleTimeString();
-                console.log(`[DEBUG WS OPEN ${time}] 🟢 WebSocket OPENED successfully for role [${this.role}]`);
                 const regMsg = JSON.stringify({ type: 'REGISTER', role: this.role });
-                console.log(`[DEBUG WS SEND ${time}] 📤 Sending Registration payload: ${regMsg}`);
-                this.ws!.send(regMsg);
+                this.ws?.send(regMsg);
             };
 
             this.ws.onmessage = (event: MessageEvent) => {
-                const time = new Date().toLocaleTimeString();
-                console.log(`[DEBUG WS MSG ${time}] 📥 Raw WebSocket Message Received: ${event.data}`);
                 try {
                     const msg: WsMessage = JSON.parse(event.data as string);
-                    console.log(`[DEBUG WS PARSED ${time}] ⚡ Event Type: [${msg.type}] for Role [${this.role}]`);
                     this.onMsg(msg);
-                } catch (err) {
-                    console.error(`[DEBUG WS PARSE ERROR ${time}] ⚠️ Failed to parse message JSON:`, err);
-                }
+                } catch {}
             };
 
-            this.ws.onclose = (ev) => {
-                const time = new Date().toLocaleTimeString();
-                console.log(`[DEBUG WS CLOSE ${time}] 🔴 WebSocket CLOSED (Role: [${this.role}]), Code: ${ev.code}, Reason: "${ev.reason}"`);
+            this.ws.onclose = () => {
                 if (this.shouldReconnect) {
-                    console.log(`[DEBUG WS RECONNECT ${time}] 🔄 Scheduling reconnect attempt in 3s...`);
-                    this.reconnectTimeout = setTimeout(() => this._open(), 3000);
+                    this.reconnectTimeout = setTimeout(() => this._open(), 10000);
                 }
             };
 
-            this.ws.onerror = (err: any) => {
-                const time = new Date().toLocaleTimeString();
-                console.error(`[DEBUG WS ERROR ${time}] 💥 WebSocket Socket Error (Role: [${this.role}]):`, err?.message || err);
+            this.ws.onerror = () => {
                 this.ws?.close();
             };
-        } catch (e: any) {
-            console.error(`[DEBUG WS EXCEPTION] 💥 Failed to create WebSocket instance:`, e?.message || e);
+        } catch {
             if (this.shouldReconnect) {
-                this.reconnectTimeout = setTimeout(() => this._open(), 3000);
+                this.reconnectTimeout = setTimeout(() => this._open(), 10000);
             }
         }
     }
@@ -298,16 +352,18 @@ export class SheSafeWS {
             this.ws.send(JSON.stringify(msg));
             return true;
         }
-        const time = new Date().toLocaleTimeString();
-        console.warn(`[DEBUG WS SEND RAW ${time}] ⚠️ WS not open, cannot send [${(msg as any).type}]`);
         return false;
     }
 
     disconnect() {
-        console.log(`[DEBUG WS DISCONNECT] 🛑 Disconnecting SheSafeWS for role [${this.role}]`);
         this.shouldReconnect = false;
         if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
+        if (this.realtimeChannel) {
+            supabase.removeChannel(this.realtimeChannel);
+            this.realtimeChannel = null;
+        }
         this.ws?.close();
         this.ws = null;
     }
 }
+
