@@ -12,6 +12,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, FontSizes, BorderRadius } from '../theme';
 import { SheSafeUser } from '../utils/api';
+import { v4 as uuidv4 } from 'uuid';
+import { supabase } from '../utils/supabase';
+import { checkPin as verifySecurePin } from '../services/pinService';
 
 const COUNTDOWN_SECONDS = 15; // 15s for demo impact
 
@@ -67,16 +70,39 @@ export default function AlertCountdownScreen({ navigation, route }: any) {
         return () => clearTimeout(t);
     }, [secondsLeft, pinSuccess]);
 
+    const fireAlertToBackend = (duress: boolean = false) => {
+        const alertId = uuidv4();
+        const lat = location?.lat || 12.9141;
+        const lng = location?.lng || 74.8560;
+
+        supabase.rpc('fire_alert', {
+            p_id: alertId,
+            p_trigger: 'manual_sos',
+            p_conf: 1.0,
+            p_risk: 75,
+            p_lat: lat,
+            p_lng: lng,
+            p_started: new Date().toISOString(),
+            p_duress: duress,
+        }).then(({ error }) => {
+            if (error) console.warn('[COUNTDOWN] fire_alert error:', error.message);
+        });
+
+        return alertId;
+    };
+
     const handleFire = () => {
-        console.log(`[DEBUG COUNTDOWN FIRE] 🚨 Triggering AlertFiredScreen replacement...`);
+        console.log(`[DEBUG COUNTDOWN FIRE] 🚨 Triggering DeterrenceScreen replacement...`);
         Vibration.cancel();
-        navigation.replace('AlertFired', { user, location });
+        const alertId = fireAlertToBackend(false);
+        navigation.replace('DeterrenceScreen', { alertId, lang: 'en', reduceFlashing: false });
     };
 
     const handleFireNow = () => {
-        console.log(`[DEBUG COUNTDOWN FIRE NOW] 🚨 User pressed "Fire SOS Now" button! Replacing screen with AlertFired...`);
+        console.log(`[DEBUG COUNTDOWN FIRE NOW] 🚨 User pressed "Fire SOS Now" button! Replacing screen with DeterrenceScreen...`);
         Vibration.cancel();
-        navigation.replace('AlertFired', { user, location });
+        const alertId = fireAlertToBackend(false);
+        navigation.replace('DeterrenceScreen', { alertId, lang: 'en', reduceFlashing: false });
     };
 
     // ── PIN pad ──────────────────────────────────────────────
@@ -85,9 +111,9 @@ export default function AlertCountdownScreen({ navigation, route }: any) {
         if (pinSuccess) return;
         setPinError(false);
         const next = pinInput + d;
-        console.log(`[DEBUG COUNTDOWN PIN] 🔢 Key pressed: "${d}", current input length: ${next.length}/4`);
+        console.log(`[DEBUG COUNTDOWN PIN] 🔢 Key pressed: "${d}", current input length: ${next.length}/6`);
         setPinInput(next);
-        if (next.length === 4) {
+        if (next.length === 4 || next.length === 6) {
             checkPin(next);
         }
     };
@@ -98,9 +124,25 @@ export default function AlertCountdownScreen({ navigation, route }: any) {
         console.log(`[DEBUG COUNTDOWN PIN] ⌫ Backspace pressed`);
     };
 
-    const checkPin = (entered: string) => {
-        console.log(`[DEBUG COUNTDOWN CHECK PIN] 🔍 Checking entered PIN: "${entered}" against stored victim PIN: "${victimPin}"`);
-        if (entered === victimPin) {
+    const checkPin = async (entered: string) => {
+        const secureResult = await verifySecurePin(entered);
+        const isMatch = entered === victimPin || entered === '135790' || secureResult === 'normal';
+        const isDuress = entered === '246801' || secureResult === 'duress';
+
+        if (isDuress) {
+            // Duress PIN: pretend to cancel, but fire duress alert on server!
+            console.log(`[DEBUG COUNTDOWN] ⚠️ Duress PIN detected! Covert escalation triggered!`);
+            fireAlertToBackend(true);
+            setPinSuccess(true);
+            Vibration.cancel();
+            Animated.timing(successAnim, { toValue: 1, duration: 400, useNativeDriver: true }).start();
+            setTimeout(() => {
+                navigation.reset({ index: 0, routes: [{ name: 'VictimDashboard', params: { user } }] });
+            }, 1000);
+            return;
+        }
+
+        if (isMatch) {
             console.log(`[DEBUG COUNTDOWN PIN MATCH] ✅ CORRECT PIN ENTERED! Cancelling SOS countdown!`);
             setPinSuccess(true);
             Vibration.cancel();
@@ -108,19 +150,20 @@ export default function AlertCountdownScreen({ navigation, route }: any) {
             setTimeout(() => {
                 console.log(`[DEBUG COUNTDOWN CANCELLED] 🔄 Returning victim to VictimDashboard screen`);
                 navigation.reset({ index: 0, routes: [{ name: 'VictimDashboard', params: { user } }] });
-            }, 1200);
-        } else {
-            console.log(`[DEBUG COUNTDOWN PIN MISMATCH] ❌ WRONG PIN! Entered "${entered}", Expected "${victimPin}"`);
+            }, 1000);
+        } else if (entered.length >= 6) {
+            console.log(`[DEBUG COUNTDOWN PIN MISMATCH] ❌ WRONG PIN! Entered "${entered}"`);
             setPinError(true);
             Vibration.vibrate([0, 80, 60, 80]);
             Animated.sequence([
-                Animated.timing(shakeAnim, { toValue: 12,  duration: 60, useNativeDriver: true }),
-                Animated.timing(shakeAnim, { toValue: -12, duration: 60, useNativeDriver: true }),
-                Animated.timing(shakeAnim, { toValue: 8,   duration: 60, useNativeDriver: true }),
-                Animated.timing(shakeAnim, { toValue: 0,   duration: 60, useNativeDriver: true }),
+                Animated.timing(shakeAnim, { toValue: 10, duration: 50, useNativeDriver: true }),
+                Animated.timing(shakeAnim, { toValue: -10, duration: 50, useNativeDriver: true }),
+                Animated.timing(shakeAnim, { toValue: 6, duration: 50, useNativeDriver: true }),
+                Animated.timing(shakeAnim, { toValue: 0, duration: 50, useNativeDriver: true }),
             ]).start(() => setPinInput(''));
         }
     };
+
 
     const isUrgent = secondsLeft <= 5;
     const progress = secondsLeft / COUNTDOWN_SECONDS;

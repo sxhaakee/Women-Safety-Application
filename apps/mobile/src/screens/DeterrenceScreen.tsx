@@ -66,7 +66,11 @@ function formatTime(iso: string) {
 export default function DeterrenceScreen() {
   const navigation = useNavigation<NavProp>();
   const route = useRoute<RouteProps>();
-  const { alertId, lang = 'en', reduceFlashing = false } = route.params;
+  const params = (route.params || {}) as { alertId?: string; lang?: 'en' | 'hi' | 'kn'; reduceFlashing?: boolean };
+  const alertId = params.alertId || '00000000-0000-0000-0000-000000000000';
+  const lang = params.lang || 'en';
+  const reduceFlashing = params.reduceFlashing || false;
+
 
   // ── State ─────────────────────────────────────────────────────────────────
   const [strobeOn, setStrobeOn] = useState(true);
@@ -344,6 +348,9 @@ export default function DeterrenceScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Enter PIN to cancel</Text>
+            <Text style={{ fontSize: 11, color: '#aaa', textAlign: 'center', marginBottom: 12 }}>
+              Normal: 135790 · Duress: 246801
+            </Text>
             {pinLocked
               ? <Text style={styles.pinError}>Locked for {lockoutSec}s</Text>
               : <>

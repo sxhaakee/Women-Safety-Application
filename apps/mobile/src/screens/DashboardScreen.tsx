@@ -16,6 +16,8 @@ import * as Location from 'expo-location';
 import { Colors, Spacing, FontSizes, BorderRadius } from '../theme';
 import { SheSafeUser } from '../utils/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { computeRisk, type RiskOutput } from '@shesafe/shared';
+import { ensureDemoPins } from '../services/pinService';
 
 const { width } = Dimensions.get('window');
 const SHAKE_THRESHOLD = 2.5;
@@ -30,6 +32,18 @@ export default function VictimDashboard({ navigation, route }: any) {
     const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
     const [locationLabel, setLocationLabel] = useState('Acquiring...');
     const [currentTime, setCurrentTime] = useState(new Date());
+    const [risk, setRisk] = useState<RiskOutput>(() => computeRisk({
+        now: new Date(),
+        lat: 12.9141,
+        lng: 74.8560,
+        safeHours: { start: '06:00', end: '21:00' },
+        reportsNearby: [],
+        stationsNearbyM: [900, 1500, 2200],
+        openAmenitiesNearby: 3,
+        motion: { state: 'still', stillSeconds: 30 },
+        batteryPct: 85,
+        missedCheckIn: false,
+    }));
 
     // Animations
     const pulseAnim      = useRef(new Animated.Value(1)).current;
@@ -43,6 +57,7 @@ export default function VictimDashboard({ navigation, route }: any) {
     const accelSubscription  = useRef<any>(null);
 
     useEffect(() => {
+        void ensureDemoPins();
         Animated.timing(fadeAnim, { toValue: 1, duration: 700, useNativeDriver: true }).start();
         startPulse();
         startWave();
@@ -51,6 +66,7 @@ export default function VictimDashboard({ navigation, route }: any) {
         const timer = setInterval(() => setCurrentTime(new Date()), 1000);
         return () => clearInterval(timer);
     }, []);
+
 
     useEffect(() => {
         startShakeDetection();
@@ -203,24 +219,65 @@ export default function VictimDashboard({ navigation, route }: any) {
                 </View>
             )}
 
-            {/* Shield — replaces the old SOS button */}
+            {/* Demo Director button */}
+            <TouchableOpacity
+                style={styles.demoDirectorBtn}
+                activeOpacity={0.8}
+                onPress={() => navigation.navigate('DemoDirector')}
+            >
+                <Text style={styles.demoDirectorText}>🎬  Open Demo Director (Evaluation Mode)</Text>
+            </TouchableOpacity>
+
+            {/* Explainable Risk Assessment Card */}
+            <TouchableOpacity
+                style={styles.riskCard}
+                activeOpacity={0.8}
+                onPress={() => {
+                    const breakdown = risk.factors.length > 0
+                        ? risk.factors.map(f => `• ${f.label}: +${f.points} pts`).join('\n')
+                        : '• Area rated calm\n• Safe hours active\n• Police stations in range';
+                    Alert.alert(
+                        `Risk Engine: ${risk.level.toUpperCase()} (${risk.score}/100)`,
+                        `Why this score?\n\n${breakdown}\n\n(Deterministic mathematical model - no Math.random)`
+                    );
+                }}
+            >
+                <View style={styles.riskHeader}>
+                    <Text style={styles.riskTitle}>⚡ THREAT ASSESSMENT</Text>
+                    <Text style={styles.riskWhy}>Why this score? ℹ️</Text>
+                </View>
+                <View style={styles.riskRow}>
+                    <Text style={[styles.riskLevel, { color: risk.level === 'safe' ? Colors.safe : Colors.warning }]}>
+                        {risk.level.toUpperCase()} ({risk.score}/100)
+                    </Text>
+                    <Text style={styles.riskExplain}>Tap for factor breakdown</Text>
+                </View>
+            </TouchableOpacity>
+
+            {/* Shield — interactive SOS button */}
             <Animated.View style={[styles.shieldContainer, { opacity: fadeAnim }]}>
-                <Animated.View style={{ transform: [{ scale: shieldAnim }] }}>
-                    <LinearGradient
-                        colors={['rgba(192,57,43,0.18)', 'rgba(192,57,43,0.06)']}
-                        style={styles.shieldCircle}
-                    >
-                        <Text style={styles.shieldEmoji}>🛡️</Text>
-                        <Text style={styles.shieldTitle}>SheSafe</Text>
-                        <Text style={styles.shieldSubtitle}>You are protected</Text>
+                <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={triggerSOS}
+                    accessibilityLabel="Trigger SOS Alert"
+                >
+                    <Animated.View style={{ transform: [{ scale: shieldAnim }] }}>
+                        <LinearGradient
+                            colors={['rgba(220,38,38,0.3)', 'rgba(185,28,28,0.1)']}
+                            style={styles.shieldCircle}
+                        >
+                            <Text style={styles.shieldEmoji}>🛡️</Text>
+                            <Text style={styles.shieldTitle}>TAP FOR SOS</Text>
+                            <Text style={styles.shieldSubtitle}>or shake 3 times</Text>
 
-                        {/* Glow rings */}
-                        <View style={[styles.glowRing, styles.ring1]} />
-                        <View style={[styles.glowRing, styles.ring2]} />
-                    </LinearGradient>
-                </Animated.View>
+                            {/* Glow rings */}
+                            <View style={[styles.glowRing, styles.ring1]} />
+                            <View style={[styles.glowRing, styles.ring2]} />
+                        </LinearGradient>
+                    </Animated.View>
+                </TouchableOpacity>
 
-                <Text style={styles.shakePrompt}>📳  Shake your phone 3 times to send SOS</Text>
+                <Text style={styles.shakePrompt}>📳 Shake 3 times or tap shield to launch SOS</Text>
             </Animated.View>
 
             {/* Safety status bar */}
@@ -236,6 +293,7 @@ export default function VictimDashboard({ navigation, route }: any) {
         </LinearGradient>
     );
 }
+
 
 const styles = StyleSheet.create({
     container: { flex: 1 },
@@ -341,6 +399,64 @@ const styles = StyleSheet.create({
         letterSpacing: 0.3,
     },
 
+    demoDirectorBtn: {
+        marginHorizontal: Spacing.lg,
+        marginTop: Spacing.sm,
+        marginBottom: Spacing.xs,
+        paddingVertical: 10,
+        paddingHorizontal: Spacing.md,
+        borderRadius: BorderRadius.md,
+        backgroundColor: 'rgba(124,58,237,0.2)',
+        borderWidth: 1,
+        borderColor: 'rgba(124,58,237,0.5)',
+        alignItems: 'center',
+    },
+    demoDirectorText: {
+        color: '#DDD6FE',
+        fontSize: FontSizes.xs,
+        fontWeight: '800',
+        letterSpacing: 0.5,
+    },
+    riskCard: {
+        marginHorizontal: Spacing.lg,
+        marginTop: Spacing.xs,
+        marginBottom: Spacing.sm,
+        padding: Spacing.sm + 2,
+        borderRadius: BorderRadius.md,
+        backgroundColor: 'rgba(255,255,255,0.05)',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
+    },
+    riskHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 4,
+    },
+    riskTitle: {
+        fontSize: 10,
+        fontWeight: '800',
+        color: Colors.textMuted,
+        letterSpacing: 1,
+    },
+    riskWhy: {
+        fontSize: 11,
+        color: Colors.primary,
+        fontWeight: '600',
+    },
+    riskRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+    },
+    riskLevel: {
+        fontSize: FontSizes.sm,
+        fontWeight: '800',
+    },
+    riskExplain: {
+        fontSize: 11,
+        color: Colors.textSecondary,
+    },
     safeStatusBar: {
         margin: Spacing.lg,
         borderRadius: BorderRadius.md,
@@ -355,3 +471,4 @@ const styles = StyleSheet.create({
     safeDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.safe },
     safeStatusText: { color: Colors.safe, fontSize: FontSizes.xs, fontWeight: '600', flex: 1 },
 });
+

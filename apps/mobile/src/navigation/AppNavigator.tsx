@@ -13,7 +13,8 @@ import PoliceDashboard from '../screens/PoliceDashboard';
 
 // Alert flow
 import AlertCountdownScreen from '../screens/AlertCountdownScreen';
-import AlertFiredScreen from '../screens/AlertFiredScreen';
+import DeterrenceScreen from '../screens/DeterrenceScreen';
+import DemoDirectorScreen from '../screens/DemoDirectorScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -43,9 +44,19 @@ export default function AppNavigator() {
                     options={{ gestureEnabled: false, animation: 'slide_from_bottom' }}
                 />
                 <Stack.Screen
-                    name="AlertFired"
-                    component={AlertFiredScreen}
+                    name="DeterrenceScreen"
+                    component={DeterrenceScreen}
                     options={{ gestureEnabled: false, animation: 'slide_from_bottom' }}
+                />
+                <Stack.Screen
+                    name="AlertFired"
+                    component={DeterrenceScreen}
+                    options={{ gestureEnabled: false, animation: 'slide_from_bottom' }}
+                />
+                <Stack.Screen
+                    name="DemoDirector"
+                    component={DemoDirectorScreen}
+                    options={{ headerShown: false, animation: 'slide_from_right' }}
                 />
 
                 {/* Guardian */}
@@ -57,3 +68,4 @@ export default function AppNavigator() {
         </NavigationContainer>
     );
 }
+
