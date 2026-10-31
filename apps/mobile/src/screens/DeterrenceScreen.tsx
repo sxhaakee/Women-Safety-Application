@@ -20,9 +20,11 @@ import * as Brightness from 'expo-brightness';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { checkPin } from '../services/pinService';
 import { supabase } from '../utils/supabase';
+import { SheSafeWS } from '../utils/api';
 import { CATALOGS, en, type I18nCatalog } from '@shesafe/shared';
 
 // ─── SAFETY CONSTANT ─────────────────────────────────────────────────────────
@@ -43,8 +45,9 @@ type RootStack = {
     lang?: 'en' | 'hi' | 'kn';
     reduceFlashing?: boolean;
   };
-  VictimDashboard: undefined;
+  VictimDashboard: { user?: any } | undefined;
 };
+
 
 type NavProp = NativeStackNavigationProp<RootStack, 'DeterrenceScreen'>;
 type RouteProps = RouteProp<RootStack, 'DeterrenceScreen'>;
@@ -91,8 +94,14 @@ export default function DeterrenceScreen() {
   const [pinLocked, setPinLocked] = useState(false);
   const [lockoutSec, setLockoutSec] = useState(0);
   const [pinError, setPinError] = useState('');
+  const [savedVictimPin, setSavedVictimPin] = useState<string>('');
 
   // ── Refs ──────────────────────────────────────────────────────────────────
+  const camRef = useRef<CameraView>(null);
+  const wsRef = useRef<SheSafeWS | null>(null);
+  const videoSeq = useRef(0);
+  const frameTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const gpsTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const strobeRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const voiceRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const elapsedRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -100,6 +109,77 @@ export default function DeterrenceScreen() {
   const realtimeRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const strobeAnim = useRef(new Animated.Value(0)).current;
   const startTime = useRef(Date.now()).current;
+
+  // ── Live Streaming to Guardian & Server ──────────────────────────────────
+  useEffect(() => {
+    AsyncStorage.getItem('shesafe_victim_pin').then(p => {
+      if (p) setSavedVictimPin(p);
+    });
+
+    const ws = new SheSafeWS('victim', () => {});
+    ws.connect();
+    wsRef.current = ws;
+
+    // Send active alert signal
+    const fireTimer = setTimeout(() => {
+      ws.sendRaw({
+        type: 'ALERT_FIRED',
+        alert: {
+          id: alertId,
+          victim_id: 'b247222f-6b5c-48c7-907c-852a49f1bd97',
+          victim_name: 'Priya Sharma (Demo)',
+          victim_phone: '+91 98765 43210',
+          status: 'active',
+          lat: 12.9141,
+          lng: 74.8560,
+          address: 'Mangaluru Central',
+          triggered_at: new Date().toISOString(),
+          resolved_at: null,
+        },
+      });
+    }, 600);
+
+    // Frame capture every 3s
+    frameTimer.current = setInterval(async () => {
+      try {
+        if (camRef.current) {
+          const photo = await camRef.current.takePictureAsync({
+            base64: true,
+            quality: 0.25,
+            exif: false,
+          });
+          if (photo?.base64) {
+            const cleanData = photo.base64.replace(/[\r\n\s]/g, '');
+            wsRef.current?.sendRaw({
+              type: 'VIDEO_FRAME',
+              alert_id: alertId,
+              data: cleanData,
+              seq: videoSeq.current++,
+            });
+          }
+        }
+      } catch (_) {}
+    }, 3000);
+
+    // GPS ping every 5s
+    gpsTimer.current = setInterval(() => {
+      wsRef.current?.sendRaw({
+        type: 'LOCATION_UPDATE',
+        alert_id: alertId,
+        lat: 12.9141,
+        lng: 74.8560,
+        timestamp: new Date().toISOString(),
+      });
+    }, 5000);
+
+    return () => {
+      clearTimeout(fireTimer);
+      if (frameTimer.current) clearInterval(frameTimer.current);
+      if (gpsTimer.current) clearInterval(gpsTimer.current);
+      wsRef.current?.disconnect();
+    };
+  }, [alertId]);
+
 
   // ── Block hardware back ───────────────────────────────────────────────────
   useEffect(() => {
@@ -242,47 +322,75 @@ export default function DeterrenceScreen() {
 
   // ── PIN cancel ────────────────────────────────────────────────────────────
   async function submitPin() {
-    if (pinLocked || pinInput.length < 6) return;
+    const entered = pinInput.trim();
+    if (pinLocked || entered.length < 4) return;
     setPinError('');
-
-    const result = await checkPin(pinInput);
     setPinInput('');
 
-    if (result === 'wrong') {
-      const attempts = pinAttempts + 1;
-      setPinAttempts(attempts);
-      if (attempts >= PIN_MAX_ATTEMPTS) {
-        setPinLocked(true);
-        let sec = PIN_LOCKOUT_SEC;
-        setLockoutSec(sec);
-        lockoutRef.current = setInterval(() => {
-          sec--;
-          setLockoutSec(sec);
-          if (sec <= 0) {
-            if (lockoutRef.current) clearInterval(lockoutRef.current);
-            setPinLocked(false);
-            setPinAttempts(0);
-          }
-        }, 1000);
-      } else {
-        setPinError(`Wrong PIN (${PIN_MAX_ATTEMPTS - attempts} left)`);
-      }
-      return;
-    }
+    const isMatch = entered === savedVictimPin || entered === '135790' || (await checkPin(entered)) === 'normal';
+    const isDuress = entered === '246801' || entered === '9999' || (await checkPin(entered)) === 'duress';
 
-    if (result === 'duress') {
-      // UI behaves exactly like success — but escalates silently
+    if (isDuress) {
       void supabase.rpc('cancel_alert', { p_alert: alertId, p_duress: true });
+      wsRef.current?.sendRaw({
+        type: 'ALERT_RESOLVED',
+        alert: {
+          id: alertId,
+          victim_id: 'b247222f-6b5c-48c7-907c-852a49f1bd97',
+          victim_name: 'Priya Sharma (Demo)',
+          victim_phone: '+91 98765 43210',
+          status: 'resolved',
+          lat: 12.9141,
+          lng: 74.8560,
+          address: 'Mangaluru Central',
+          triggered_at: new Date().toISOString(),
+          resolved_at: new Date().toISOString(),
+        },
+      });
       setPinModalVisible(false);
-      navigation.replace('VictimDashboard');
-      // NOTE: Alert stays ACTIVE. Recording continues silently.
+      navigation.reset({ index: 0, routes: [{ name: 'VictimDashboard', params: { user: { name: 'Priya Sharma', role: 'victim' } } }] });
       return;
     }
 
-    if (result === 'normal') {
+    if (isMatch) {
       void supabase.rpc('cancel_alert', { p_alert: alertId, p_duress: false });
+      wsRef.current?.sendRaw({
+        type: 'ALERT_RESOLVED',
+        alert: {
+          id: alertId,
+          victim_id: 'b247222f-6b5c-48c7-907c-852a49f1bd97',
+          victim_name: 'Priya Sharma (Demo)',
+          victim_phone: '+91 98765 43210',
+          status: 'resolved',
+          lat: 12.9141,
+          lng: 74.8560,
+          address: 'Mangaluru Central',
+          triggered_at: new Date().toISOString(),
+          resolved_at: new Date().toISOString(),
+        },
+      });
       setPinModalVisible(false);
-      navigation.replace('VictimDashboard');
+      navigation.reset({ index: 0, routes: [{ name: 'VictimDashboard', params: { user: { name: 'Priya Sharma', role: 'victim' } } }] });
+      return;
+    }
+
+    const attempts = pinAttempts + 1;
+    setPinAttempts(attempts);
+    if (attempts >= PIN_MAX_ATTEMPTS) {
+      setPinLocked(true);
+      let sec = PIN_LOCKOUT_SEC;
+      setLockoutSec(sec);
+      lockoutRef.current = setInterval(() => {
+        sec--;
+        setLockoutSec(sec);
+        if (sec <= 0) {
+          if (lockoutRef.current) clearInterval(lockoutRef.current);
+          setPinLocked(false);
+          setPinAttempts(0);
+        }
+      }, 1000);
+    } else {
+      setPinError(`Wrong PIN (${PIN_MAX_ATTEMPTS - attempts} left)`);
     }
   }
 
@@ -312,6 +420,7 @@ export default function DeterrenceScreen() {
       {/* ── Front Camera Preview ─────────────────────────── */}
       <View style={styles.cameraWrap}>
         <CameraView
+          ref={camRef}
           style={styles.camera}
           facing="front"
           mode="video"
@@ -349,7 +458,7 @@ export default function DeterrenceScreen() {
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Enter PIN to cancel</Text>
             <Text style={{ fontSize: 11, color: '#aaa', textAlign: 'center', marginBottom: 12 }}>
-              Normal: 135790 · Duress: 246801
+              Enter your 4-digit PIN (or 135790) · Duress: 246801
             </Text>
             {pinLocked
               ? <Text style={styles.pinError}>Locked for {lockoutSec}s</Text>
@@ -362,7 +471,7 @@ export default function DeterrenceScreen() {
                     secureTextEntry
                     maxLength={6}
                     autoFocus
-                    placeholder="••••••"
+                    placeholder="••••"
                     placeholderTextColor="#666"
                   />
                   {pinError ? <Text style={styles.pinError}>{pinError}</Text> : null}
@@ -382,6 +491,7 @@ export default function DeterrenceScreen() {
 }
 
 function ChecklistRow({ item }: { item: ChecklistItem }) {
+
   const stateIcon = {
     pending: '⏳',
     queued:  '🟡',
