@@ -17,14 +17,6 @@ create type trigger_t as enum (
   'safe_walk_deviation','safe_walk_stationary','safe_walk_overdue','cab_deviation','duress_pin'
 );
 
--- ── HELPER: role lookup (used in policies before profiles RLS defined) ────────
--- SECURITY DEFINER so it can read profiles even when called from a policy.
-create or replace function public.get_my_role()
-  returns role_t language sql security definer stable
-  set search_path = public as $$
-    select role from public.profiles where id = auth.uid()
-$$;
-
 -- ── STATIONS ───────────────────────────────────────────────────────────────
 create table public.stations (
   id          uuid primary key default gen_random_uuid(),
@@ -40,8 +32,7 @@ alter table public.stations enable row level security;
 -- All authenticated users can view stations (risk scoring, nearest-station lookup)
 create policy "authenticated_view_stations" on public.stations
   for select to authenticated using (true);
-create policy "admin_manage_stations" on public.stations
-  for all to authenticated using (public.get_my_role() = 'admin');
+-- admin_manage_stations added after get_my_role() is defined below
 
 -- ── PROFILES ───────────────────────────────────────────────────────────────
 create table public.profiles (
@@ -54,6 +45,17 @@ create table public.profiles (
   expo_push_token text,
   created_at      timestamptz not null default now()
 );
+
+-- Helper function: get current user's role (used in RLS policies)
+create or replace function public.get_my_role()
+  returns role_t language sql security definer stable
+  set search_path = public as $$
+    select role from public.profiles where id = auth.uid()
+$$;
+
+-- Deferred: stations admin policy (needs get_my_role)
+create policy "admin_manage_stations" on public.stations
+  for all to authenticated using (public.get_my_role() = 'admin');
 
 alter table public.profiles enable row level security;
 create policy "own_profile" on public.profiles
