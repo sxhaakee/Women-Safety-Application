@@ -17,6 +17,14 @@ create type trigger_t as enum (
   'safe_walk_deviation','safe_walk_stationary','safe_walk_overdue','cab_deviation','duress_pin'
 );
 
+-- ── HELPER: role lookup (used in policies before profiles RLS defined) ────────
+-- SECURITY DEFINER so it can read profiles even when called from a policy.
+create or replace function public.get_my_role()
+  returns role_t language sql security definer stable
+  set search_path = public as $$
+    select role from public.profiles where id = auth.uid()
+$$;
+
 -- ── STATIONS ───────────────────────────────────────────────────────────────
 create table public.stations (
   id          uuid primary key default gen_random_uuid(),
@@ -29,18 +37,11 @@ create table public.stations (
 create index stations_geom_gist on public.stations using gist(geom);
 
 alter table public.stations enable row level security;
--- Police can view stations; admin can manage
-create policy "police_view_stations" on public.stations
-  for select to authenticated using (
-    (select role from public.profiles where id = auth.uid()) in ('police','admin')
-  );
-create policy "admin_manage_stations" on public.stations
-  for all to authenticated using (
-    (select role from public.profiles where id = auth.uid()) = 'admin'
-  );
--- Victims and guardians can view for risk scoring
-create policy "victim_view_stations" on public.stations
+-- All authenticated users can view stations (risk scoring, nearest-station lookup)
+create policy "authenticated_view_stations" on public.stations
   for select to authenticated using (true);
+create policy "admin_manage_stations" on public.stations
+  for all to authenticated using (public.get_my_role() = 'admin');
 
 -- ── PROFILES ───────────────────────────────────────────────────────────────
 create table public.profiles (
@@ -97,7 +98,7 @@ create policy "volunteer_own" on public.volunteers
   for all to authenticated using (user_id = auth.uid());
 create policy "admin_manage_volunteers" on public.volunteers
   for all to authenticated using (
-    (select role from public.profiles where id = auth.uid()) = 'admin'
+    public.get_my_role() = 'admin'
   );
 
 -- ── ALERTS ─────────────────────────────────────────────────────────────────
@@ -143,7 +144,7 @@ create policy "guardian_view_active_alerts" on public.alerts
 -- Police: see active alerts within their station's escalation scope
 create policy "police_view_scoped_alerts" on public.alerts
   for select to authenticated using (
-    (select role from public.profiles where id = auth.uid()) = 'police'
+    public.get_my_role() = 'police'
     and status in ('active','acknowledged','dispatched')
     and exists (
       select 1 from public.alert_stations als
@@ -165,7 +166,7 @@ create table public.alert_stations (
 alter table public.alert_stations enable row level security;
 create policy "police_view_alert_stations" on public.alert_stations
   for select to authenticated using (
-    (select role from public.profiles where id = auth.uid()) in ('police','admin')
+    public.get_my_role() in ('police','admin')
   );
 
 -- ── ALERT LOCATIONS ────────────────────────────────────────────────────────
@@ -315,7 +316,7 @@ create policy "victim_own_evidence" on public.evidence_chunks
   );
 create policy "police_view_evidence" on public.evidence_chunks
   for select to authenticated using (
-    (select role from public.profiles where id = auth.uid()) = 'police'
+    public.get_my_role() = 'police'
     and exists (
       select 1 from public.alert_stations als
       where als.alert_id = public.evidence_chunks.alert_id
@@ -379,7 +380,7 @@ create table public.access_log (
 alter table public.access_log enable row level security;
 create policy "admin_view_log" on public.access_log
   for select to authenticated using (
-    (select role from public.profiles where id = auth.uid()) = 'admin'
+    public.get_my_role() = 'admin'
   );
 
 -- ── RPCs ───────────────────────────────────────────────────────────────────
