@@ -97,14 +97,14 @@ export default function AlertCountdownScreen({ navigation, route }: any) {
         console.log(`[DEBUG COUNTDOWN FIRE] 🚨 Triggering DeterrenceScreen replacement...`);
         Vibration.cancel();
         const alertId = fireAlertToBackend(false);
-        navigation.replace('DeterrenceScreen', { alertId, lang: 'en', reduceFlashing: false });
+        navigation.replace('DeterrenceScreen', { alertId, lang: 'en', reduceFlashing: false, user, pin: victimPin });
     };
 
     const handleFireNow = () => {
         console.log(`[DEBUG COUNTDOWN FIRE NOW] 🚨 User pressed "Fire SOS Now" button! Replacing screen with DeterrenceScreen...`);
         Vibration.cancel();
         const alertId = fireAlertToBackend(false);
-        navigation.replace('DeterrenceScreen', { alertId, lang: 'en', reduceFlashing: false });
+        navigation.replace('DeterrenceScreen', { alertId, lang: 'en', reduceFlashing: false, user, pin: victimPin });
     };
 
     // ── PIN pad ──────────────────────────────────────────────
@@ -127,8 +127,11 @@ export default function AlertCountdownScreen({ navigation, route }: any) {
     };
 
     const checkPin = async (entered: string) => {
+        const storedVictimPin = await AsyncStorage.getItem('shesafe_victim_pin');
+        const storedPin = await AsyncStorage.getItem('shesafe_pin');
+        const myPin = storedVictimPin || storedPin || victimPin || user?.pin;
         const secureResult = await verifySecurePin(entered);
-        const isMatch = entered === victimPin || entered === '135790' || secureResult === 'normal';
+        const isMatch = (myPin && entered === myPin) || entered === '135790' || secureResult === 'normal';
         const isDuress = entered === '246801' || secureResult === 'duress';
 
         if (isDuress) {

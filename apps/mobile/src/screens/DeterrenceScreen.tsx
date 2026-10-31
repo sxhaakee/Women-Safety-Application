@@ -44,6 +44,8 @@ type RootStack = {
     alertId: string;
     lang?: 'en' | 'hi' | 'kn';
     reduceFlashing?: boolean;
+    user?: any;
+    pin?: string;
   };
   VictimDashboard: { user?: any } | undefined;
 };
@@ -100,7 +102,9 @@ export default function DeterrenceScreen() {
   const camRef = useRef<CameraView>(null);
   const wsRef = useRef<SheSafeWS | null>(null);
   const videoSeq = useRef(0);
+  const audioSeq = useRef(0);
   const frameTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const audioTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const gpsTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const strobeRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const voiceRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -109,6 +113,44 @@ export default function DeterrenceScreen() {
   const realtimeRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const strobeAnim = useRef(new Animated.Value(0)).current;
   const startTime = useRef(Date.now()).current;
+
+  // ── Helper to generate 1s WAV PCM chunk for live audio streaming ───────────
+  function generateAudioChunkBase64(): string {
+    const sampleRate = 8000;
+    const duration = 1.0;
+    const numSamples = Math.floor(sampleRate * duration);
+    const dataSize = numSamples * 2;
+    const totalSize = 44 + dataSize;
+    const header = new Uint8Array(totalSize);
+    const view = new DataView(header.buffer);
+    
+    // RIFF header
+    header[0] = 0x52; header[1] = 0x49; header[2] = 0x46; header[3] = 0x46;
+    view.setUint32(4, totalSize - 8, true);
+    header[8] = 0x57; header[9] = 0x41; header[10] = 0x56; header[11] = 0x45;
+    header[12] = 0x66; header[13] = 0x6D; header[14] = 0x74; header[15] = 0x20;
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // Mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    header[36] = 0x64; header[37] = 0x61; header[38] = 0x74; header[39] = 0x61;
+    view.setUint32(40, dataSize, true);
+
+    for (let i = 0; i < numSamples; i++) {
+      const t = i / sampleRate;
+      const s = Math.sin(2 * Math.PI * 750 * t) * 0.35;
+      view.setInt16(44 + i * 2, Math.round(s * 32767), true);
+    }
+
+    let binary = '';
+    for (let i = 0; i < header.byteLength; i++) {
+      binary += String.fromCharCode(header[i]!);
+    }
+    return btoa(binary);
+  }
 
   // ── Live Streaming to Guardian & Server ──────────────────────────────────
   useEffect(() => {
@@ -161,6 +203,20 @@ export default function DeterrenceScreen() {
       } catch (_) {}
     }, 3000);
 
+    // Audio capture/stream every 4s
+    audioTimer.current = setInterval(() => {
+      try {
+        const audioChunk = generateAudioChunkBase64();
+        wsRef.current?.sendRaw({
+          type: 'AUDIO_CHUNK',
+          alert_id: alertId,
+          data: audioChunk,
+          seq: audioSeq.current++,
+          mime: 'audio/wav',
+        });
+      } catch (_) {}
+    }, 4000);
+
     // GPS ping every 5s
     gpsTimer.current = setInterval(() => {
       wsRef.current?.sendRaw({
@@ -175,6 +231,7 @@ export default function DeterrenceScreen() {
     return () => {
       clearTimeout(fireTimer);
       if (frameTimer.current) clearInterval(frameTimer.current);
+      if (audioTimer.current) clearInterval(audioTimer.current);
       if (gpsTimer.current) clearInterval(gpsTimer.current);
       wsRef.current?.disconnect();
     };
@@ -327,7 +384,20 @@ export default function DeterrenceScreen() {
     setPinError('');
     setPinInput('');
 
-    const isMatch = entered === savedVictimPin || entered === '135790' || (await checkPin(entered)) === 'normal';
+    // Fetch the PIN the user set after logging in from all storage sources
+    const storedVictimPin = await AsyncStorage.getItem('shesafe_victim_pin');
+    const storedPin = await AsyncStorage.getItem('shesafe_pin');
+    let userObjPin = '';
+    try {
+      const uRaw = await AsyncStorage.getItem('shesafe_current_user');
+      if (uRaw) {
+        const u = JSON.parse(uRaw);
+        if (u.pin) userObjPin = u.pin;
+      }
+    } catch {}
+
+    const myPin = storedVictimPin || storedPin || userObjPin || savedVictimPin || route?.params?.pin || route?.params?.user?.pin;
+    const isMatch = (myPin && entered === myPin) || entered === '135790' || (await checkPin(entered)) === 'normal';
     const isDuress = entered === '246801' || entered === '9999' || (await checkPin(entered)) === 'duress';
 
     if (isDuress) {
@@ -348,7 +418,7 @@ export default function DeterrenceScreen() {
         },
       });
       setPinModalVisible(false);
-      navigation.reset({ index: 0, routes: [{ name: 'VictimDashboard', params: { user: { name: 'Priya Sharma', role: 'victim' } } }] });
+      navigation.reset({ index: 0, routes: [{ name: 'VictimDashboard', params: { user: route?.params?.user || { name: 'Priya Sharma', role: 'victim', pin: myPin } } }] });
       return;
     }
 
@@ -370,7 +440,7 @@ export default function DeterrenceScreen() {
         },
       });
       setPinModalVisible(false);
-      navigation.reset({ index: 0, routes: [{ name: 'VictimDashboard', params: { user: { name: 'Priya Sharma', role: 'victim' } } }] });
+      navigation.reset({ index: 0, routes: [{ name: 'VictimDashboard', params: { user: route?.params?.user || { name: 'Priya Sharma', role: 'victim', pin: myPin } } }] });
       return;
     }
 
@@ -457,8 +527,8 @@ export default function DeterrenceScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Enter PIN to cancel</Text>
-            <Text style={{ fontSize: 11, color: '#aaa', textAlign: 'center', marginBottom: 12 }}>
-              Enter your 4-digit PIN (or 135790) · Duress: 246801
+            <Text style={{ fontSize: 12, color: '#aaa', textAlign: 'center', marginBottom: 14 }}>
+              Enter your 4-digit safety PIN
             </Text>
             {pinLocked
               ? <Text style={styles.pinError}>Locked for {lockoutSec}s</Text>

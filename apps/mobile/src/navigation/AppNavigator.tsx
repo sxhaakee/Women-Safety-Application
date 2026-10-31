@@ -16,6 +16,11 @@ import AlertCountdownScreen from '../screens/AlertCountdownScreen';
 import DeterrenceScreen from '../screens/DeterrenceScreen';
 import DemoDirectorScreen from '../screens/DemoDirectorScreen';
 
+// Prevention & Community
+import SafeWalkScreen from '../screens/SafeWalkScreen';
+import CabGuardianScreen from '../screens/CabGuardianScreen';
+import CommunityReportsScreen from '../screens/CommunityReportsScreen';
+
 const Stack = createNativeStackNavigator();
 
 /**
@@ -56,6 +61,21 @@ export default function AppNavigator() {
                 <Stack.Screen
                     name="DemoDirector"
                     component={DemoDirectorScreen}
+                    options={{ headerShown: false, animation: 'slide_from_right' }}
+                />
+                <Stack.Screen
+                    name="SafeWalk"
+                    component={SafeWalkScreen}
+                    options={{ headerShown: false, animation: 'slide_from_right' }}
+                />
+                <Stack.Screen
+                    name="CabGuardian"
+                    component={CabGuardianScreen}
+                    options={{ headerShown: false, animation: 'slide_from_right' }}
+                />
+                <Stack.Screen
+                    name="CommunityReports"
+                    component={CommunityReportsScreen}
                     options={{ headerShown: false, animation: 'slide_from_right' }}
                 />
 

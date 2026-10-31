@@ -285,10 +285,12 @@ export class SheSafeWS {
         this.shouldReconnect = true;
         console.log(`[DEBUG WS CONNECT] 🔌 Initiating Realtime connection for role [${this.role}]...`);
 
-        // 1. Supabase Realtime Channel
+        // 1. Supabase Realtime Channel with Broadcast + Postgres Changes
         try {
             this.realtimeChannel = supabase
-                .channel(`shesafe_alerts_${this.role}`)
+                .channel('shesafe_live_room', {
+                    config: { broadcast: { ack: false, self: false } },
+                })
                 .on('postgres_changes', { event: '*', schema: 'public', table: 'alerts' }, (payload) => {
                     const row = payload.new as any;
                     if (row) {
@@ -300,9 +302,14 @@ export class SheSafeWS {
                         }
                     }
                 })
+                .on('broadcast', { event: 'shesafe_msg' }, ({ payload }) => {
+                    if (payload && payload.type) {
+                        this.onMsg(payload as WsMessage);
+                    }
+                })
                 .subscribe((status) => {
                     if (status === 'SUBSCRIBED') {
-                        console.log(`[DEBUG REALTIME] ✅ Supabase Realtime connected for role [${this.role}]`);
+                        console.log(`[DEBUG REALTIME] ✅ Supabase Realtime subscribed for role [${this.role}]`);
                         this.onMsg({ type: 'REGISTERED', role: this.role });
                     }
                 });
@@ -348,11 +355,27 @@ export class SheSafeWS {
     }
 
     sendRaw(msg: object): boolean {
-        if (this.ws && this.ws.readyState === (this.ws as any).OPEN) {
-            this.ws.send(JSON.stringify(msg));
-            return true;
+        let sent = false;
+        // Broadcast through Supabase Realtime (Global Cloud)
+        if (this.realtimeChannel) {
+            try {
+                this.realtimeChannel.send({
+                    type: 'broadcast',
+                    event: 'shesafe_msg',
+                    payload: msg,
+                }).catch(() => {});
+                sent = true;
+            } catch {}
         }
-        return false;
+
+        // Send via local WebSocket if available
+        if (this.ws && (this.ws as any).readyState === (this.ws as any).OPEN) {
+            try {
+                this.ws.send(JSON.stringify(msg));
+                sent = true;
+            } catch {}
+        }
+        return sent;
     }
 
     disconnect() {

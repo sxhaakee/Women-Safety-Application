@@ -228,6 +228,33 @@ export default function VictimDashboard({ navigation, route }: any) {
                 <Text style={styles.demoDirectorText}>🎬  Open Demo Director (Evaluation Mode)</Text>
             </TouchableOpacity>
 
+            {/* Prevention Tools Row */}
+            <View style={styles.toolsRow}>
+                <TouchableOpacity
+                    style={styles.toolBtn}
+                    onPress={() => navigation.navigate('SafeWalk')}
+                >
+                    <Text style={styles.toolEmoji}>🚶‍♀️</Text>
+                    <Text style={styles.toolLabel}>Safe Walk</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                    style={styles.toolBtn}
+                    onPress={() => navigation.navigate('CabGuardian', { user })}
+                >
+                    <Text style={styles.toolEmoji}>🚕</Text>
+                    <Text style={styles.toolLabel}>Cab Guardian</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                    style={styles.toolBtn}
+                    onPress={() => navigation.navigate('CommunityReports')}
+                >
+                    <Text style={styles.toolEmoji}>⚠️</Text>
+                    <Text style={styles.toolLabel}>Hazard Map</Text>
+                </TouchableOpacity>
+            </View>
+
             {/* Explainable Risk Assessment Card */}
             <TouchableOpacity
                 style={styles.riskCard}
@@ -417,6 +444,24 @@ const styles = StyleSheet.create({
         fontWeight: '800',
         letterSpacing: 0.5,
     },
+    toolsRow: {
+        flexDirection: 'row',
+        marginHorizontal: Spacing.lg,
+        marginTop: Spacing.xs,
+        marginBottom: Spacing.xs,
+        gap: 8,
+    },
+    toolBtn: {
+        flex: 1,
+        backgroundColor: 'rgba(255,255,255,0.06)',
+        borderRadius: BorderRadius.md,
+        paddingVertical: 10,
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.1)',
+    },
+    toolEmoji: { fontSize: 18, marginBottom: 2 },
+    toolLabel: { color: '#EEE', fontSize: 11, fontWeight: '700' },
     riskCard: {
         marginHorizontal: Spacing.lg,
         marginTop: Spacing.xs,

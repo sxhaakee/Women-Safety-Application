@@ -49,8 +49,10 @@ export default function GuardianDashboard({ navigation, route }: any) {
         const clk = setInterval(() => setCurrentTime(new Date()), 1000);
         loadAlerts();
         connectWS();
+        const poll = setInterval(loadAlerts, 3000);
         return () => {
             clearInterval(clk);
+            clearInterval(poll);
             clearInterval(elapsedRef.current);
             wsRef.current?.disconnect();
             soundRef.current?.remove();
@@ -62,11 +64,7 @@ export default function GuardianDashboard({ navigation, route }: any) {
             startAlertAnims();
             startElapsed();
             currentAlertId.current = activeAlert.id;
-            audioChunksRef.current = [];
-            videoFramesRef.current = [];
             setPoliceGranted(false);
-            setAudioChunkCount(0);
-            setLiveVideoFrame(null);
         } else {
             clearInterval(elapsedRef.current);
             setElapsed(0);
@@ -91,7 +89,16 @@ export default function GuardianDashboard({ navigation, route }: any) {
 
     const loadAlerts = async () => {
         const [active, all] = await Promise.all([getActiveAlerts(), getAllAlerts()]);
-        if (active.length > 0) setActiveAlert(active[0]);
+        if (active.length > 0) {
+            setActiveAlert(prev => {
+                if (!prev || prev.id !== active[0].id) {
+                    return active[0];
+                }
+                return prev;
+            });
+        } else {
+            setActiveAlert(null);
+        }
         setHistory(all);
     };
 

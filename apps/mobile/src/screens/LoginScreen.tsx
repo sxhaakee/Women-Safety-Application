@@ -16,6 +16,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, FontSizes, BorderRadius } from '../theme';
 import { loginUser, SheSafeUser } from '../utils/api';
+import { savePin } from '../utils/storage';
 
 const { width } = Dimensions.get('window');
 
@@ -328,8 +329,10 @@ export default function LoginScreen({ navigation }: any) {
             <PinSetupStep
                 user={loggedInUser}
                 onDone={async (pin) => {
-                    // Save PIN to AsyncStorage so countdown screen can read it
+                    // Save PIN to AsyncStorage and storage service so all screens can read it
                     await AsyncStorage.setItem('shesafe_victim_pin', pin);
+                    await AsyncStorage.setItem('shesafe_pin', pin);
+                    await savePin(pin);
                     navigateByRole(loggedInUser, pin);
                 }}
             />
