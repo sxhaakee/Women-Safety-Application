@@ -145,11 +145,23 @@ export default function DeterrenceScreen() {
       view.setInt16(44 + i * 2, Math.round(s * 32767), true);
     }
 
-    let binary = '';
-    for (let i = 0; i < header.byteLength; i++) {
-      binary += String.fromCharCode(header[i]!);
+    return uint8ToBase64(header);
+  }
+
+  function uint8ToBase64(bytes: Uint8Array): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let result = '';
+    const len = bytes.length;
+    for (let i = 0; i < len; i += 3) {
+      const b0 = bytes[i]!;
+      const b1 = i + 1 < len ? bytes[i + 1]! : 0;
+      const b2 = i + 2 < len ? bytes[i + 2]! : 0;
+      result += chars[b0 >> 2]!;
+      result += chars[((b0 & 3) << 4) | (b1 >> 4)]!;
+      result += i + 1 < len ? chars[((b1 & 15) << 2) | (b2 >> 6)]! : '=';
+      result += i + 2 < len ? chars[b2 & 63]! : '=';
     }
-    return btoa(binary);
+    return result;
   }
 
   // ── Live Streaming to Guardian & Server ──────────────────────────────────
@@ -179,26 +191,41 @@ export default function DeterrenceScreen() {
           resolved_at: null,
         },
       });
+
+      // Immediate first audio chunk & frame
+      const audioChunk = generateAudioChunkBase64();
+      ws.sendRaw({
+        type: 'AUDIO_CHUNK',
+        alert_id: alertId,
+        data: audioChunk,
+        seq: audioSeq.current++,
+        mime: 'audio/wav',
+      });
     }, 600);
 
     // Frame capture every 3s
     frameTimer.current = setInterval(async () => {
       try {
+        let frameData = '';
         if (camRef.current) {
-          const photo = await camRef.current.takePictureAsync({
-            base64: true,
-            quality: 0.25,
-            exif: false,
-          });
-          if (photo?.base64) {
-            const cleanData = photo.base64.replace(/[\r\n\s]/g, '');
-            wsRef.current?.sendRaw({
-              type: 'VIDEO_FRAME',
-              alert_id: alertId,
-              data: cleanData,
-              seq: videoSeq.current++,
+          try {
+            const photo = await camRef.current.takePictureAsync({
+              base64: true,
+              quality: 0.25,
+              exif: false,
             });
-          }
+            if (photo?.base64) {
+              frameData = photo.base64.replace(/[\r\n\s]/g, '');
+            }
+          } catch (_) {}
+        }
+        if (frameData) {
+          wsRef.current?.sendRaw({
+            type: 'VIDEO_FRAME',
+            alert_id: alertId,
+            data: frameData,
+            seq: videoSeq.current++,
+          });
         }
       } catch (_) {}
     }, 3000);
@@ -493,7 +520,7 @@ export default function DeterrenceScreen() {
           ref={camRef}
           style={styles.camera}
           facing="front"
-          mode="video"
+          mode="picture"
         />
         <View style={styles.recRow}>
           <View style={styles.recDot} />

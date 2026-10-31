@@ -289,7 +289,7 @@ export class SheSafeWS {
         try {
             this.realtimeChannel = supabase
                 .channel('shesafe_live_room', {
-                    config: { broadcast: { ack: false, self: false } },
+                    config: { broadcast: { ack: false, self: true } },
                 })
                 .on('postgres_changes', { event: '*', schema: 'public', table: 'alerts' }, (payload) => {
                     const row = payload.new as any;

@@ -245,21 +245,24 @@ export default function GuardianDashboard({ navigation, route }: any) {
                     } catch (_) {}
                 }
             }
-            let audioUrl = null;
+            let audioSaved = false;
+            let audioTargetUri = '';
             if (chunks.length > 0) {
-                const last = chunks[chunks.length - 1];
-                const res = await fetch(`${BACKEND_URL}/api/recording/save`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ alert_id: currentAlertId.current, audio_b64: last.data, mime_type: last.mime }),
-                });
-                if (res.ok) { const d = await res.json(); audioUrl = d.url; }
+                const last = chunks[chunks.length - 1]!;
+                try {
+                    audioTargetUri = (FileSystem.documentDirectory || FileSystem.cacheDirectory) + `shesafe_audio_${Date.now()}.wav`;
+                    await FileSystem.writeAsStringAsync(audioTargetUri, last.data, { encoding: FileSystem.EncodingType.Base64 });
+                    audioSaved = true;
+                } catch (_) {}
             }
             setIsSaving(false);
-            Alert.alert('✅ Recording Saved', `${framesSaved} snapshots saved to device storage.\nAudio URL: ${audioUrl || 'N/A'}`);
+            Alert.alert(
+                '💾 Evidence Saved to Device',
+                `Successfully saved ${framesSaved} camera snapshots ${audioSaved ? 'and audio recording' : ''} to device storage.\n\nFile location: ${FileSystem.documentDirectory || 'App Documents'}`
+            );
         } catch (e: any) {
             setIsSaving(false);
-            Alert.alert('❌ Save Failed', e?.message);
+            Alert.alert('❌ Save Failed', e?.message || 'Unable to write to storage');
         }
     };
 
