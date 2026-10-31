@@ -12,8 +12,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, FontSizes, BorderRadius } from '../theme';
 import { SheSafeUser } from '../utils/api';
-import { v4 as uuidv4 } from 'uuid';
+import { generateUUID } from '../utils/uuid';
 import { supabase } from '../utils/supabase';
+
 import { checkPin as verifySecurePin } from '../services/pinService';
 
 const COUNTDOWN_SECONDS = 15; // 15s for demo impact
@@ -71,8 +72,9 @@ export default function AlertCountdownScreen({ navigation, route }: any) {
     }, [secondsLeft, pinSuccess]);
 
     const fireAlertToBackend = (duress: boolean = false) => {
-        const alertId = uuidv4();
+        const alertId = generateUUID();
         const lat = location?.lat || 12.9141;
+
         const lng = location?.lng || 74.8560;
 
         supabase.rpc('fire_alert', {

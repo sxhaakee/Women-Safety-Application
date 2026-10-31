@@ -23,8 +23,9 @@ import {
   StatusBar,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { v4 as uuidv4 } from 'uuid';
+import { generateUUID } from '../utils/uuid';
 import { Colors, Spacing, FontSizes, BorderRadius } from '../theme';
+
 import { supabase } from '../utils/supabase';
 import { ensureDemoPins, checkPin } from '../services/pinService';
 import { computeRisk } from '@shesafe/shared';
@@ -52,8 +53,9 @@ export default function DemoDirectorScreen({ navigation }: any) {
   const handleDirectSOS = async () => {
     setLoading(true);
     setStatusMsg('Firing real alert to Supabase and launching Deterrence...');
-    const alertId = uuidv4();
+    const alertId = generateUUID();
     setActiveAlertId(alertId);
+
 
     try {
       const { error } = await supabase.rpc('fire_alert', {
