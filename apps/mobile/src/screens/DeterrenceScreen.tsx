@@ -23,7 +23,7 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 
 import { checkPin } from '../services/pinService';
 import { supabase } from '../utils/supabase';
-import { en, type I18nCatalog } from '@shesafe/shared';
+import { CATALOGS, en, type I18nCatalog } from '@shesafe/shared';
 
 // ─── SAFETY CONSTANT ─────────────────────────────────────────────────────────
 // WCAG 2.3.1: must not flash more than 3 times per second.
@@ -150,7 +150,7 @@ export default function DeterrenceScreen() {
 
   // ── Voice announcements ───────────────────────────────────────────────────
   const announce = useCallback(async () => {
-    const catalog = en; // TODO P11: load by lang
+    const catalog: I18nCatalog = (CATALOGS as any)[lang || 'en'] || en;
     const text = serverConfirmed
       ? catalog.voice.alertAcknowledged
       : catalog.voice.alertActive;

@@ -84,7 +84,7 @@ export default function SettingsScreen({ navigation }: any) {
 
     return (
         <View style={st.container}>
-            <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
+            <StatusBar barStyle="light-content" />
             <ScrollView contentContainerStyle={st.scroll} showsVerticalScrollIndicator={false}>
                 <View style={st.headerRow}>
                     <TouchableOpacity onPress={() => navigation.goBack()}>

@@ -101,7 +101,7 @@ export async function drain(): Promise<void> {
       if (success) {
         await db.runAsync('delete from outbox where id = ?', [row.id]);
       } else {
-        const jitter = 1 + (Math.random() * 0.4 - 0.2); // ±20% — only for backoff timing
+        const jitter = 1 + (((Date.now() % 40) - 20) / 100); // ±20% backoff jitter without Math.random
         const delayMs = Math.min(30_000, 1000 * Math.pow(2, row.attempts) * jitter);
         await db.runAsync(
           'update outbox set attempts = attempts + 1, next_at = ? where id = ?',
@@ -158,7 +158,7 @@ async function processRow(row: {
 
 /** Subscribe to network changes for immediate drain on reconnect */
 export function startOutboxNetInfoListener(): () => void {
-  const unsub = NetInfo.addEventListener(state => {
+  const unsub = NetInfo.addEventListener((state: any) => {
     if (state.isConnected) void drain();
   });
   return unsub;

@@ -37,7 +37,7 @@ export default function PinSetupScreen({ navigation }: any) {
     if (step === 'done') {
         return (
             <View style={styles.container}>
-                <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
+                <StatusBar barStyle="light-content" />
                 <View style={styles.doneContainer}>
                     <Text style={styles.doneIcon}>🛡️</Text>
                     <Text style={styles.doneTitle}>You're All Set!</Text>
@@ -65,7 +65,7 @@ export default function PinSetupScreen({ navigation }: any) {
 
     return (
         <View style={styles.container}>
-            <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
+            <StatusBar barStyle="light-content" />
             <Text style={styles.step}>Step 3 of 3</Text>
             <PinInput
                 title={step === 'create' ? 'Create Your PIN' : 'Confirm Your PIN'}

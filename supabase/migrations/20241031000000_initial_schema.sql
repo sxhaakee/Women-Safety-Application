@@ -169,7 +169,7 @@ alter table public.access_log enable row level security;
 
 create or replace function public.get_my_role()
   returns role_t language sql security definer stable
-  set search_path = public as $$
+  set search_path = public, extensions as $$
     select role from public.profiles where id = auth.uid()
 $$;
 
@@ -350,7 +350,7 @@ create trigger no_delete_alert_events
 -- Hash chain trigger on INSERT
 create or replace function public.chain_alert_event()
   returns trigger language plpgsql security definer
-  set search_path = public as $$
+  set search_path = public, extensions as $$
 declare
   v_prev_hash bytea;
   v_data      bytea;
@@ -388,7 +388,7 @@ create trigger chain_on_insert
 create or replace function public.nearest_stations(
   p_lat float8, p_lng float8, p_k int default 3
 ) returns table(id uuid, name text, phone text, distance_m float8)
-  language sql stable security definer set search_path = public as $$
+  language sql stable security definer set search_path = public, extensions as $$
   select s.id, s.name, s.phone,
     ST_Distance(s.geom, ST_MakePoint(p_lng, p_lat)::geography) as distance_m
   from public.stations s
@@ -401,7 +401,7 @@ create or replace function public.fire_alert(
   p_id      uuid, p_trigger trigger_t, p_conf real, p_risk int,
   p_lat     float8, p_lng float8, p_started timestamptz, p_duress boolean
 ) returns table(alert public.alerts, witness_token text)
-  language plpgsql security definer set search_path = public as $$
+  language plpgsql security definer set search_path = public, extensions as $$
 declare
   v_alert     public.alerts;
   v_token_raw bytea;
@@ -434,7 +434,7 @@ $$;
 
 -- push_locations
 create or replace function public.push_locations(p_alert uuid, p_batch jsonb)
-  returns void language plpgsql security definer set search_path = public as $$
+  returns void language plpgsql security definer set search_path = public, extensions as $$
 declare v_item jsonb;
 begin
   if (select victim_id from public.alerts where id = p_alert) != auth.uid() then
@@ -457,7 +457,7 @@ $$;
 
 -- acknowledge_alert
 create or replace function public.acknowledge_alert(p_alert uuid, p_eta int default null)
-  returns void language plpgsql security definer set search_path = public as $$
+  returns void language plpgsql security definer set search_path = public, extensions as $$
 declare v_role role_t;
 begin
   select role into v_role from public.profiles where id = auth.uid();
@@ -476,7 +476,7 @@ $$;
 
 -- cancel_alert
 create or replace function public.cancel_alert(p_alert uuid, p_duress boolean)
-  returns void language plpgsql security definer set search_path = public as $$
+  returns void language plpgsql security definer set search_path = public, extensions as $$
 begin
   if (select victim_id from public.alerts where id = p_alert) != auth.uid() then
     raise exception 'Not authorized';
@@ -495,7 +495,7 @@ $$;
 
 -- resolve_alert
 create or replace function public.resolve_alert(p_alert uuid, p_outcome text default null)
-  returns void language plpgsql security definer set search_path = public as $$
+  returns void language plpgsql security definer set search_path = public, extensions as $$
 declare v_role role_t;
 begin
   select role into v_role from public.profiles where id = auth.uid();
@@ -509,7 +509,7 @@ $$;
 -- verify_chain
 create or replace function public.verify_chain(p_alert uuid)
   returns table(ok boolean, broken_at bigint)
-  language plpgsql security definer set search_path = public as $$
+  language plpgsql security definer set search_path = public, extensions as $$
 declare
   v_prev_hash bytea := decode('00', 'hex');
   v_expected  bytea;
@@ -530,7 +530,7 @@ $$;
 
 -- delete_my_data
 create or replace function public.delete_my_data()
-  returns void language plpgsql security definer set search_path = public as $$
+  returns void language plpgsql security definer set search_path = public, extensions as $$
 begin
   insert into public.access_log (who, what, at) values (auth.uid(), 'delete_my_data', now());
   delete from public.profiles where id = auth.uid();
@@ -539,7 +539,7 @@ $$;
 
 -- escalation_tick
 create or replace function public.escalation_tick()
-  returns void language plpgsql security definer set search_path = public as $$
+  returns void language plpgsql security definer set search_path = public, extensions as $$
 declare a record;
 begin
   for a in select * from public.alerts where status in ('active','acknowledged') and fired_at is not null loop

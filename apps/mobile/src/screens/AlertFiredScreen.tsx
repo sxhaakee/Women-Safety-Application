@@ -363,7 +363,7 @@ export default function AlertFiredScreen({ navigation, route }: any) {
     // ── Render ────────────────────────────────────────────────
     return (
         <View style={styles.root}>
-            <StatusBar barStyle="light-content" backgroundColor="#7F0000" />
+            <StatusBar barStyle="light-content" />
 
             <ScrollView
                 contentContainerStyle={styles.scroll}

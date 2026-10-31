@@ -106,11 +106,14 @@ export function alertReducer(
 
     case 'POLICE_ACKNOWLEDGE': {
       if (status !== 'active') throw new AlertTransitionError(status, event.type);
-      return {
+      const next: AlertState = {
         ...state,
         status: 'acknowledged',
-        etaMinutes: event.etaMinutes,
       };
+      if (event.etaMinutes !== undefined) {
+        next.etaMinutes = event.etaMinutes;
+      }
+      return next;
     }
 
     case 'DISPATCH': {
