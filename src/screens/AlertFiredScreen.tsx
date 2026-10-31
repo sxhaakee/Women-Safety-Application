@@ -1,110 +1,607 @@
-import React, { useState, useEffect, useRef } from 'react';
+/**
+ * AlertFiredScreen — OPEN EMERGENCY SCREEN
+ * NO STEALTH MODE. NO BLACK SCREEN. NO LOCK SCREEN.
+ *
+ * What shows on screen:
+ *   1. BIG RED EMERGENCY HEADER + live timer
+ *   2. Live front-camera preview (200px tall, clearly visible)
+ *   3. GPS status row
+ *   4. OPEN numeric keypad (1-9, 0, ⌫) directly on screen
+ *      → victim types her 4-digit login PIN → alert stops
+ *
+ * Background:
+ *   → camera snapshot every 3s (with full console logs)
+ *   → mic chunk every 5s
+ *   → GPS ping every 5s
+ *   → back button / swipe blocked
+ */
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-    View, Text, TouchableOpacity, StyleSheet, ScrollView,
-    Animated, StatusBar, Alert,
+    View, Text, StyleSheet, StatusBar,
+    TouchableOpacity, Animated, Vibration,
+    Platform, BackHandler, ScrollView,
 } from 'react-native';
-import { Colors, FontSizes, Spacing, BorderRadius } from '../theme';
-import { getTrustedContacts, getUserProfile, TrustedContact, UserProfile } from '../utils/storage';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useFocusEffect } from '@react-navigation/native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import {
+    useAudioRecorder,
+    RecordingPresets,
+    requestRecordingPermissionsAsync,
+    setAudioModeAsync,
+} from 'expo-audio';
+import * as Location from 'expo-location';
+import * as FileSystem from 'expo-file-system/legacy';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Colors, Spacing, BorderRadius } from '../theme';
+import { SheSafeUser, SheSafeWS, fireAlert, sendLocationPing, resolveAlert } from '../utils/api';
 
-const DEMO_STATIONS = [
-    { name: 'Koramangala PS', phone: '080-25530555' },
-    { name: 'HSR Layout PS', phone: '080-25530556' },
-    { name: 'Madiwala PS', phone: '080-25530557' },
-];
+export default function AlertFiredScreen({ navigation, route }: any) {
+    const user: SheSafeUser = route?.params?.user;
+    const initLoc = route?.params?.location;
 
-export default function AlertFiredScreen({ navigation }: any) {
-    const [contacts, setContacts] = useState<TrustedContact[]>([]);
-    const pulseAnim = useRef(new Animated.Value(0.3)).current;
-    const fadeAnim = useRef(new Animated.Value(0)).current;
+    // ── State ─────────────────────────────────────────────────
+    const [elapsed, setElapsed]   = useState(0);
+    const [pin, setPin]           = useState('');
+    const [pinError, setPinError] = useState(false);
+    const [pinOk, setPinOk]       = useState(false);
+    const [camReady, setCamReady] = useState(false);
+    const [address, setAddress]   = useState('Acquiring GPS…');
 
+    // ── Audio Recorder (SDK 57) ───────────────────────────────
+    const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+
+    // ── Refs ───────────────────────────────────────────────────
+    const camRef       = useRef<CameraView>(null);
+    const audioTimer   = useRef<any>(null);
+    const gpsTimer     = useRef<any>(null);
+    const vidTimer     = useRef<any>(null);
+    const elapsedTimer = useRef<any>(null);
+    const alertId      = useRef<string | null>(null);
+    const audioSeq     = useRef(0);
+    const videoSeq     = useRef(0);
+    const wsRef        = useRef<SheSafeWS | null>(null);
+    const mounted      = useRef(true);
+    const capturing    = useRef(false);
+    const savedPin     = useRef('1234'); // will be loaded from AsyncStorage
+
+    // ── Animations ─────────────────────────────────────────────
+    const pulseAnim = useRef(new Animated.Value(1)).current;
+    const shakeAnim = useRef(new Animated.Value(0)).current;
+
+    const [camPerm, requestCamPerm] = useCameraPermissions();
+
+    // ── Block back navigation ──────────────────────────────────
+    useFocusEffect(
+        useCallback(() => {
+            navigation.setOptions({ gestureEnabled: false });
+            const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+                console.log('[ALERT] 🛡 Back button blocked');
+                return true;
+            });
+            return () => sub.remove();
+        }, [navigation])
+    );
+
+    // ── Boot ───────────────────────────────────────────────────
     useEffect(() => {
-        getTrustedContacts().then(setContacts);
-        Animated.loop(Animated.sequence([
-            Animated.timing(pulseAnim, { toValue: 1, duration: 600, useNativeDriver: true }),
-            Animated.timing(pulseAnim, { toValue: 0.3, duration: 600, useNativeDriver: true }),
-        ])).start();
-        Animated.timing(fadeAnim, { toValue: 1, duration: 500, useNativeDriver: true }).start();
+        mounted.current = true;
+        console.log('[ALERT] ===== AlertFiredScreen MOUNTED — NO STEALTH MODE =====');
+
+        // Load victim PIN from storage
+        AsyncStorage.getItem('shesafe_victim_pin').then(p => {
+            if (p && p.length === 4) {
+                savedPin.current = p;
+                console.log('[ALERT] ✅ Loaded victim PIN from storage:', p);
+            } else {
+                console.log('[ALERT] ⚠️ No victim PIN in storage — using default 1234');
+            }
+        });
+
+        // Pulse siren
+        Animated.loop(
+            Animated.sequence([
+                Animated.timing(pulseAnim, { toValue: 0.1, duration: 400, useNativeDriver: true }),
+                Animated.timing(pulseAnim, { toValue: 1,   duration: 400, useNativeDriver: true }),
+            ])
+        ).start();
+
+        // Elapsed counter
+        elapsedTimer.current = setInterval(() => {
+            if (mounted.current) setElapsed(e => e + 1);
+        }, 1000);
+
+        boot();
+
+        return () => {
+            mounted.current = false;
+            clearInterval(gpsTimer.current);
+            clearInterval(vidTimer.current);
+            clearInterval(elapsedTimer.current);
+            stopAudio();
+            wsRef.current?.disconnect();
+        };
     }, []);
 
-    const handleImSafe = () => {
-        Alert.alert('Cancel Alert', 'Are you sure you are safe?', [
-            { text: 'No', style: 'cancel' },
-            { text: "Yes, I'm safe", onPress: () => navigation.reset({ index: 0, routes: [{ name: 'Dashboard' }] }) },
-        ]);
+    // ── Watch pin length → auto-verify when 4 digits entered ──
+    useEffect(() => {
+        if (pin.length === 4 && !pinOk) {
+            verifyPin(pin);
+        }
+    }, [pin]);
+
+    // ── Boot all services ──────────────────────────────────────
+    const boot = async () => {
+        console.log('[ALERT] 🔌 Connecting WebSocket...');
+        const socket = new SheSafeWS('victim', () => {});
+        socket.connect();
+        wsRef.current = socket;
+
+        // GPS
+        let lat = initLoc?.lat ?? 12.8067;
+        let lng = initLoc?.lng ?? 74.9322;
+        let addr = 'Location tracking active';
+        try {
+            const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+            lat = loc.coords.latitude;
+            lng = loc.coords.longitude;
+            const [geo] = await Location.reverseGeocodeAsync({ latitude: lat, longitude: lng });
+            if (geo) addr = [geo.street, geo.district || geo.city, geo.region].filter(Boolean).join(', ');
+            if (mounted.current) setAddress(addr);
+            console.log('[ALERT] 📍 GPS acquired:', addr);
+        } catch (e: any) {
+            console.warn('[ALERT] GPS error:', e?.message);
+        }
+
+        // Fire SOS alert on server
+        console.log('[ALERT] 🚨 Firing SOS alert on server...');
+        const fired = await fireAlert({
+            victim_id:    user?.id    ?? 'victim-001',
+            victim_name:  user?.name  ?? 'Unknown Victim',
+            victim_phone: user?.phone ?? '+91 00000 00000',
+            lat, lng, address: addr,
+        });
+        if (fired) {
+            alertId.current = fired.id;
+            console.log('[ALERT] ✅ Alert ID:', fired.id);
+
+            // GPS ping loop
+            gpsTimer.current = setInterval(async () => {
+                if (!mounted.current || !alertId.current) return;
+                try {
+                    const l = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+                    await sendLocationPing(alertId.current, l.coords.latitude, l.coords.longitude);
+                    console.log(`[GPS] Pinged: ${l.coords.latitude.toFixed(5)}, ${l.coords.longitude.toFixed(5)}`);
+                } catch (_) {}
+            }, 5000);
+        } else {
+            console.warn('[ALERT] ⚠️ fireAlert returned null — server may be down');
+        }
+
+        // Camera
+        console.log('[CAM] Requesting camera permission...');
+        let camGranted = camPerm?.granted;
+        if (!camGranted) {
+            const perm = await requestCamPerm();
+            camGranted = perm.granted;
+        }
+        console.log('[CAM] Camera permission granted:', camGranted);
+        if (camGranted && mounted.current) {
+            setCamReady(true);
+            console.log('[CAM] ✅ Camera ready — starting 3s frame capture loop');
+            vidTimer.current = setInterval(captureAndSendFrame, 3000);
+        } else {
+            console.warn('[CAM] ❌ Camera NOT ready — no frames will be captured');
+        }
+
+        // Audio
+        const { granted: audioOk } = await requestRecordingPermissionsAsync();
+        console.log('[AUDIO] Mic permission granted:', audioOk);
+        if (audioOk) {
+            await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+            console.log('[AUDIO] ✅ Starting rolling 5s audio recording');
+            recordAudio();
+        }
     };
 
+    // ── Camera frame capture (with full logging) ───────────────
+    const captureAndSendFrame = async () => {
+        const t = new Date().toLocaleTimeString();
+
+        if (!mounted.current) {
+            console.log(`[CAM ${t}] ⏭ Skipped — screen unmounted`);
+            return;
+        }
+        if (capturing.current) {
+            console.log(`[CAM ${t}] ⏭ Skipped — already capturing`);
+            return;
+        }
+        if (!camRef.current) {
+            console.warn(`[CAM ${t}] ❌ camRef is null — camera not mounted yet`);
+            return;
+        }
+        if (!alertId.current) {
+            console.warn(`[CAM ${t}] ❌ No alert ID — server not connected?`);
+            return;
+        }
+        if (!wsRef.current) {
+            console.warn(`[CAM ${t}] ❌ WebSocket ref is null`);
+            return;
+        }
+
+        capturing.current = true;
+        console.log(`[CAM ${t}] 📸 Taking photo... (seq #${videoSeq.current})`);
+
+        try {
+            const photo = await camRef.current.takePictureAsync({
+                base64: true,
+                quality: 0.25,
+                exif: false,
+            });
+
+            if (!photo?.base64) {
+                console.warn(`[CAM ${t}] ❌ takePictureAsync returned no base64 data`);
+                return;
+            }
+
+            const b64 = photo.base64.replace(/[\r\n\s]/g, '');
+            const sizeKb = Math.round(b64.length / 1024);
+            console.log(`[CAM ${t}] 📷 Photo captured (${sizeKb} KB) — sending via WebSocket...`);
+
+            const ok = wsRef.current.sendRaw({
+                type: 'VIDEO_FRAME',
+                alert_id: alertId.current,
+                data: b64,
+                seq: videoSeq.current,
+            });
+
+            if (ok) {
+                console.log(`[CAM ${t}] ✅ Frame #${videoSeq.current} sent successfully (${sizeKb} KB)`);
+            } else {
+                console.warn(`[CAM ${t}] ⚠️ Frame #${videoSeq.current} — WS sendRaw returned false (not connected?)`);
+            }
+            videoSeq.current++;
+        } catch (e: any) {
+            console.error(`[CAM ${t}] 💥 takePictureAsync FAILED: ${e?.message}`);
+        } finally {
+            capturing.current = false;
+        }
+    };
+
+    // ── Rolling audio ─────────────────────────────────────────
+    const recordAudio = async () => {
+        if (!mounted.current) return;
+        try {
+            await recorder.prepareToRecordAsync();
+            recorder.record();
+            const seq = audioSeq.current++;
+            console.log(`[AUDIO] 🎤 Recording chunk #${seq}...`);
+
+            audioTimer.current = setTimeout(async () => {
+                if (!mounted.current) return;
+                try {
+                    await recorder.stop();
+                    const uri = recorder.uri;
+                    if (uri && alertId.current && wsRef.current) {
+                        const b64 = (await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 }))
+                            .replace(/[\r\n\s]/g, '');
+                        wsRef.current.sendRaw({ type: 'AUDIO_CHUNK', alert_id: alertId.current, data: b64, seq, mime: 'audio/m4a' });
+                        console.log(`[AUDIO] ✅ Chunk #${seq} sent (${Math.round(b64.length / 1024)} KB)`);
+                        await FileSystem.deleteAsync(uri, { idempotent: true });
+                    }
+                } catch (e: any) {
+                    console.warn('[AUDIO] Chunk error:', e?.message);
+                }
+                if (mounted.current) recordAudio();
+            }, 5000);
+        } catch (e: any) {
+            console.warn('[AUDIO] Record start error:', e?.message);
+            if (mounted.current) audioTimer.current = setTimeout(recordAudio, 2000);
+        }
+    };
+
+    const stopAudio = async () => {
+        if (audioTimer.current) clearTimeout(audioTimer.current);
+        try {
+            if (recorder.isRecording) {
+                await recorder.stop();
+            }
+        } catch (_) {}
+    };
+
+    // ── PIN verification ──────────────────────────────────────
+    const verifyPin = async (entered: string) => {
+        const expected = savedPin.current;
+        console.log(`[PIN] 🔍 Entered: "${entered}" | Expected: "${expected}"`);
+
+        if (entered === expected) {
+            console.log('[PIN] ✅ Correct! Resolving alert...');
+            setPinOk(true);
+            Vibration.cancel();
+            setTimeout(async () => {
+                mounted.current = false;
+                clearInterval(gpsTimer.current);
+                clearInterval(vidTimer.current);
+                clearInterval(elapsedTimer.current);
+                stopAudio();
+                if (alertId.current) {
+                    await resolveAlert(alertId.current);
+                    console.log('[PIN] 📡 Alert resolved on server');
+                }
+                wsRef.current?.disconnect();
+                navigation.reset({ index: 0, routes: [{ name: 'VictimDashboard', params: { user } }] });
+            }, 800);
+        } else {
+            console.log('[PIN] ❌ Wrong PIN!');
+            setPinError(true);
+            Vibration.vibrate([0, 80, 60, 80]);
+            Animated.sequence([
+                Animated.timing(shakeAnim, { toValue:  14, duration: 55, useNativeDriver: true }),
+                Animated.timing(shakeAnim, { toValue: -14, duration: 55, useNativeDriver: true }),
+                Animated.timing(shakeAnim, { toValue:   9, duration: 55, useNativeDriver: true }),
+                Animated.timing(shakeAnim, { toValue:   0, duration: 55, useNativeDriver: true }),
+            ]).start();
+            setTimeout(() => { setPin(''); setPinError(false); }, 800);
+        }
+    };
+
+    const pressKey = (k: string) => {
+        if (pinOk) return;
+        if (k === '⌫') {
+            setPinError(false);
+            setPin(p => p.slice(0, -1));
+        } else {
+            if (pin.length >= 4) return;
+            setPinError(false);
+            setPin(p => p + k);
+        }
+    };
+
+    const fmt = (s: number) =>
+        `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+
+    // ── Render ────────────────────────────────────────────────
     return (
-        <View style={s.container}>
-            <StatusBar barStyle="light-content" backgroundColor="#1A0000" />
-            <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
-                <Animated.View style={[s.header, { opacity: fadeAnim }]}>
-                    <Text style={s.icon}>🚨</Text>
-                    <Text style={s.title}>ALERT DISPATCHED</Text>
-                    <Text style={s.time}>{new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</Text>
-                </Animated.View>
+        <View style={styles.root}>
+            <StatusBar barStyle="light-content" backgroundColor="#7F0000" />
 
-                <View style={s.recBanner}>
-                    <Animated.View style={[s.recDot, { opacity: pulseAnim }]} />
-                    <Text style={s.recText}>Evidence Recording Active</Text>
+            <ScrollView
+                contentContainerStyle={styles.scroll}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="always"
+            >
+                {/* ── EMERGENCY HEADER ──────────────────── */}
+                <LinearGradient colors={['#B91C1C', '#7F1D1D']} style={styles.header}>
+                    <Animated.Text style={[styles.sirenEmoji, { opacity: pulseAnim }]}>🚨</Animated.Text>
+                    <View style={{ flex: 1 }}>
+                        <Text style={styles.headerTitle}>EMERGENCY SOS ACTIVE</Text>
+                        <Text style={styles.headerSub}>Live video & audio sent to Police + Guardian</Text>
+                    </View>
+                    <View style={styles.timerBox}>
+                        <Text style={styles.timerTxt}>⏱ {fmt(elapsed)}</Text>
+                    </View>
+                </LinearGradient>
+
+                {/* ── LIVE CAMERA FEED ──────────────────── */}
+                <View style={styles.camBox}>
+                    {camReady ? (
+                        <CameraView ref={camRef} style={styles.camView} facing="front" />
+                    ) : (
+                        <View style={styles.camFallback}>
+                            <Text style={{ fontSize: 28 }}>📷</Text>
+                            <Text style={styles.camFallbackTxt}>Starting camera…</Text>
+                        </View>
+                    )}
+                    <View style={styles.liveBadge}>
+                        <Animated.View style={[styles.liveDot, { opacity: pulseAnim }]} />
+                        <Text style={styles.liveTxt}>LIVE — Streaming to Police & Guardian</Text>
+                    </View>
                 </View>
 
-                <Text style={s.secTitle}>🚔 Police Stations Notified</Text>
-                {DEMO_STATIONS.map((st, i) => (
-                    <View key={i} style={s.card}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.cardName}>{st.name}</Text>
-                            <Text style={s.cardPhone}>{st.phone}</Text>
-                        </View>
-                        <View style={s.badge}><Text style={s.badgeText}>✓ Sent</Text></View>
+                {/* ── GPS + AUDIO STATUS ────────────────── */}
+                <View style={styles.statusRow}>
+                    <Text style={styles.statusIcon}>📍</Text>
+                    <Text style={styles.statusTxt} numberOfLines={1}>{address}</Text>
+                    <View style={styles.recBadge}>
+                        <Animated.Text style={{ fontSize: 10, opacity: pulseAnim }}>🎤</Animated.Text>
+                        <Text style={styles.recTxt}>REC</Text>
                     </View>
-                ))}
-
-                <Text style={[s.secTitle, { marginTop: Spacing.lg }]}>👥 Trusted Contacts Notified</Text>
-                {contacts.map((c) => (
-                    <View key={c.id} style={s.card}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.cardName}>{c.name}</Text>
-                            <Text style={s.cardPhone}>{c.phone}</Text>
-                        </View>
-                        <View style={s.badge}><Text style={s.badgeText}>✓ Sent</Text></View>
-                    </View>
-                ))}
-
-                <View style={s.mapBox}>
-                    <Text style={{ fontSize: 40 }}>📍</Text>
-                    <Text style={s.mapText}>Live Location Sharing Active</Text>
-                    <Text style={s.mapSub}>Shared every 30 seconds with contacts</Text>
                 </View>
 
-                <TouchableOpacity style={s.safeBtn} onPress={handleImSafe} activeOpacity={0.8}>
-                    <Text style={s.safeBtnText}>✓ I'm Safe — Cancel Alert</Text>
-                </TouchableOpacity>
-                <Text style={s.footer}>Emergency services have been notified. Stay safe.</Text>
+                {/* ── PIN SECTION ───────────────────────── */}
+                <View style={styles.pinCard}>
+
+                    <Text style={styles.pinHeading}>🔒 Enter your 4-digit login code to stop SOS</Text>
+
+                    {/* 4 big indicator dots */}
+                    <Animated.View style={[styles.dotsRow, { transform: [{ translateX: shakeAnim }] }]}>
+                        {[0, 1, 2, 3].map(i => (
+                            <View key={i} style={[
+                                styles.dot,
+                                pin.length > i  && styles.dotFilled,
+                                pinError        && styles.dotError,
+                                pinOk           && styles.dotOk,
+                            ]} />
+                        ))}
+                    </Animated.View>
+
+                    <Text style={[
+                        styles.pinStatusTxt,
+                        pinError && { color: '#EF4444' },
+                        pinOk    && { color: '#10B981' },
+                    ]}>
+                        {pinError ? '❌ Wrong code — try again'
+                        : pinOk   ? '✅ Correct! Stopping SOS…'
+                        :           'Enter the 4-digit code you set at login'}
+                    </Text>
+
+                    {/* ── KEYPAD — big round buttons ───────── */}
+                    <View style={styles.keypadWrap}>
+                        {/* Row 1: 1 2 3 */}
+                        <View style={styles.keyRow}>
+                            {['1','2','3'].map(k => <KeyBtn key={k} label={k} onPress={() => pressKey(k)} />)}
+                        </View>
+                        {/* Row 2: 4 5 6 */}
+                        <View style={styles.keyRow}>
+                            {['4','5','6'].map(k => <KeyBtn key={k} label={k} onPress={() => pressKey(k)} />)}
+                        </View>
+                        {/* Row 3: 7 8 9 */}
+                        <View style={styles.keyRow}>
+                            {['7','8','9'].map(k => <KeyBtn key={k} label={k} onPress={() => pressKey(k)} />)}
+                        </View>
+                        {/* Row 4: ⌫ 0 ✓ */}
+                        <View style={styles.keyRow}>
+                            <KeyBtn label="⌫" onPress={() => pressKey('⌫')} variant="delete" />
+                            <KeyBtn label="0" onPress={() => pressKey('0')} />
+                            <KeyBtn label="✓" onPress={() => { if (pin.length === 4) verifyPin(pin); }} variant="confirm" />
+                        </View>
+                    </View>
+
+                </View>
             </ScrollView>
         </View>
     );
 }
 
-const s = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#1A0000' },
-    scroll: { padding: Spacing.lg, paddingTop: Spacing.xxl + 20, paddingBottom: Spacing.xxl },
-    header: { alignItems: 'center', marginBottom: Spacing.lg },
-    icon: { fontSize: 60 },
-    title: { fontSize: FontSizes.xxl, fontWeight: '900', color: Colors.danger, letterSpacing: 3 },
-    time: { fontSize: FontSizes.md, color: Colors.textSecondary, marginTop: Spacing.xs },
-    recBanner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(231,76,60,0.15)', borderRadius: BorderRadius.md, padding: Spacing.sm, marginBottom: Spacing.lg, gap: Spacing.sm, borderWidth: 1, borderColor: 'rgba(231,76,60,0.3)' },
-    recDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: Colors.danger },
-    recText: { color: Colors.danger, fontSize: FontSizes.sm, fontWeight: '700' },
-    secTitle: { fontSize: FontSizes.lg, fontWeight: '700', color: Colors.text, marginBottom: Spacing.md },
-    card: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: BorderRadius.md, padding: Spacing.md, marginBottom: Spacing.sm, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
-    cardName: { color: Colors.text, fontSize: FontSizes.md, fontWeight: '600' },
-    cardPhone: { color: Colors.textSecondary, fontSize: FontSizes.sm, marginTop: 2 },
-    badge: { backgroundColor: 'rgba(39,174,96,0.2)', borderRadius: BorderRadius.sm, paddingVertical: 4, paddingHorizontal: Spacing.sm },
-    badgeText: { color: Colors.safe, fontSize: FontSizes.xs, fontWeight: '700' },
-    mapBox: { backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: BorderRadius.lg, padding: Spacing.xl, alignItems: 'center', marginVertical: Spacing.lg, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
-    mapText: { color: Colors.text, fontSize: FontSizes.md, fontWeight: '600', marginTop: Spacing.sm },
-    mapSub: { color: Colors.textSecondary, fontSize: FontSizes.xs, marginTop: 4 },
-    safeBtn: { backgroundColor: Colors.safe, borderRadius: BorderRadius.xl, paddingVertical: Spacing.lg, alignItems: 'center', marginBottom: Spacing.md },
-    safeBtnText: { color: Colors.white, fontSize: FontSizes.lg, fontWeight: '800' },
-    footer: { color: Colors.textMuted, fontSize: FontSizes.xs, textAlign: 'center' },
+// ── Small reusable key button component ───────────────────────
+function KeyBtn({
+    label,
+    onPress,
+    variant,
+}: {
+    label: string;
+    onPress: () => void;
+    variant?: 'delete' | 'confirm';
+}) {
+    return (
+        <TouchableOpacity
+            style={[
+                styles.key,
+                variant === 'delete'  && styles.keyDel,
+                variant === 'confirm' && styles.keyCon,
+            ]}
+            onPress={onPress}
+            activeOpacity={0.55}
+        >
+            <Text style={[
+                styles.keyTxt,
+                variant === 'delete'  && styles.keyTxtDel,
+                variant === 'confirm' && styles.keyTxtCon,
+            ]}>
+                {label}
+            </Text>
+        </TouchableOpacity>
+    );
+}
+
+// ── Styles ────────────────────────────────────────────────────
+const KEY_D = 72; // key button diameter
+
+const styles = StyleSheet.create({
+    root: {
+        flex: 1,
+        backgroundColor: '#1A0000', // clearly dark red — NOT the iOS lock screen black
+    },
+    scroll: {
+        paddingHorizontal: 16,
+        paddingTop: Platform.OS === 'ios' ? 54 : 32,
+        paddingBottom: 36,
+        gap: 12,
+    },
+
+    // Header
+    header: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+        borderRadius: 14,
+        padding: 14,
+        elevation: 6,
+    },
+    sirenEmoji: { fontSize: 28 },
+    headerTitle: { fontSize: 15, fontWeight: '900', color: '#fff', letterSpacing: 0.5 },
+    headerSub:   { fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 },
+    timerBox:    { backgroundColor: 'rgba(0,0,0,0.4)', paddingVertical: 5, paddingHorizontal: 9, borderRadius: 8 },
+    timerTxt:    { fontSize: 11, fontWeight: '800', color: '#fff' },
+
+    // Camera
+    camBox: {
+        height: 200,
+        borderRadius: 14,
+        overflow: 'hidden',
+        backgroundColor: '#000',
+        borderWidth: 2,
+        borderColor: '#EF4444',
+        position: 'relative',
+    },
+    camView: { width: '100%', height: '100%' },
+    camFallback: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6 },
+    camFallbackTxt: { color: '#aaa', fontSize: 12 },
+    liveBadge: {
+        position: 'absolute', top: 9, left: 9,
+        flexDirection: 'row', alignItems: 'center', gap: 5,
+        backgroundColor: 'rgba(0,0,0,0.8)',
+        paddingVertical: 3, paddingHorizontal: 9,
+        borderRadius: 20, borderWidth: 1, borderColor: '#EF4444',
+    },
+    liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#EF4444' },
+    liveTxt: { color: '#fff', fontSize: 10, fontWeight: '800' },
+
+    // Status row
+    statusRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 7,
+        backgroundColor: 'rgba(255,255,255,0.06)',
+        borderRadius: 10,
+        padding: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.1)',
+    },
+    statusIcon: { fontSize: 15 },
+    statusTxt:  { flex: 1, fontSize: 11, color: '#aaa' },
+    recBadge:   { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: 'rgba(139,92,246,0.22)', paddingHorizontal: 7, paddingVertical: 3, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(139,92,246,0.4)' },
+    recTxt:     { fontSize: 10, fontWeight: '800', color: '#A78BFA' },
+
+    // PIN card
+    pinCard: {
+        backgroundColor: 'rgba(255,255,255,0.05)',
+        borderRadius: 20,
+        paddingVertical: 22,
+        paddingHorizontal: 14,
+        alignItems: 'center',
+        gap: 16,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.12)',
+    },
+    pinHeading: { fontSize: 13, fontWeight: '700', color: '#F3F4F6', textAlign: 'center' },
+
+    // Dots
+    dotsRow: { flexDirection: 'row', gap: 18 },
+    dot: {
+        width: 20, height: 20, borderRadius: 10,
+        borderWidth: 2.5, borderColor: 'rgba(255,255,255,0.3)',
+        backgroundColor: 'transparent',
+    },
+    dotFilled: { backgroundColor: '#fff', borderColor: '#fff' },
+    dotError:  { backgroundColor: '#EF4444', borderColor: '#EF4444' },
+    dotOk:     { backgroundColor: '#10B981', borderColor: '#10B981' },
+
+    pinStatusTxt: { fontSize: 12, color: 'rgba(255,255,255,0.4)', textAlign: 'center' },
+
+    // Keypad
+    keypadWrap: { width: '100%', gap: 10 },
+    keyRow:     { flexDirection: 'row', justifyContent: 'center', gap: 10 },
+
+    key: {
+        width: KEY_D, height: KEY_D, borderRadius: KEY_D / 2,
+        backgroundColor: 'rgba(255,255,255,0.1)',
+        alignItems: 'center', justifyContent: 'center',
+        borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.18)',
+    },
+    keyDel: { backgroundColor: 'rgba(239,68,68,0.12)', borderColor: 'rgba(239,68,68,0.35)' },
+    keyCon: { backgroundColor: 'rgba(16,185,129,0.15)', borderColor: 'rgba(16,185,129,0.45)' },
+    keyTxt:    { fontSize: 24, fontWeight: '700', color: '#F3F4F6' },
+    keyTxtDel: { fontSize: 22, color: '#EF4444' },
+    keyTxtCon: { fontSize: 22, color: '#10B981' },
 });

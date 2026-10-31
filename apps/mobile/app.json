@@ -1,0 +1,59 @@
+{
+  "expo": {
+    "name": "SheSafe",
+    "slug": "shesafe",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0D0D0D"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "SheSafe needs your location to find nearest police stations and share your position during emergencies",
+        "NSLocationWhenInUseUsageDescription": "SheSafe needs your location for safety monitoring",
+        "NSMicrophoneUsageDescription": "SheSafe records audio as evidence during emergency alerts",
+        "NSCameraUsageDescription": "SheSafe uses camera to capture evidence during emergencies",
+        "NSPhotoLibraryUsageDescription": "SheSafe saves evidence photos to your gallery",
+        "NSPhotoLibraryAddUsageDescription": "SheSafe saves evidence photos to your gallery"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0D0D0D"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "RECORD_AUDIO",
+        "CAMERA",
+        "SEND_SMS",
+        "VIBRATE",
+        "FOREGROUND_SERVICE",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_EXTERNAL_STORAGE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-location",
+      "expo-sensors",
+      "expo-audio",
+      "expo-camera",
+      "expo-notifications",
+      "expo-asset",
+      "expo-status-bar"
+    ]
+  }
+}

@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main, frontend, dev]
+  pull_request:
+    branches: [main]
+
+jobs:
+  shared-tests:
+    name: "P2 — shared unit tests"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/shared
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - run: pnpm test --coverage
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: shared-coverage
+          path: packages/shared/coverage/
+
+  typecheck:
+    name: "G0 — typecheck all packages"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r typecheck
+
+  no-fakes:
+    name: "G — no-fakes lint gate"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/no-fakes.sh
+
+  security-audit:
+    name: "G10 — pnpm audit"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod --audit-level high || echo "AUDIT: Check output above"

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
     View,
     Text,
@@ -6,246 +6,352 @@ import {
     StyleSheet,
     Animated,
     StatusBar,
+    Vibration,
+    Alert,
+    Dimensions,
 } from 'react-native';
-import { Colors, FontSizes, Spacing, BorderRadius, getRiskColor, getRiskLevel } from '../theme';
-import RiskCircle from '../components/RiskCircle';
-import ShieldIcon from '../components/ShieldIcon';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Accelerometer } from 'expo-sensors';
+import * as Location from 'expo-location';
+import { Colors, Spacing, FontSizes, BorderRadius } from '../theme';
+import { SheSafeUser } from '../utils/api';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export default function DashboardScreen({ navigation }: any) {
-    // Simulated risk score for demo — in production, Rikash's sensor code feeds this
-    const [riskScore, setRiskScore] = useState(15);
-    const [alertActive, setAlertActive] = useState(false);
-    const fadeAnim = useRef(new Animated.Value(0)).current;
+const { width } = Dimensions.get('window');
+const SHAKE_THRESHOLD = 2.5;
+const SHAKE_COOLDOWN = 3000; // ms
+
+export default function VictimDashboard({ navigation, route }: any) {
+    const user: SheSafeUser = route?.params?.user || { name: 'Priya Sharma', role: 'victim' };
+
+    const [isMonitoring, setIsMonitoring] = useState(true);
+    const [shakeCount, setShakeCount] = useState(0);
+    const [lastShake, setLastShake] = useState(0);
+    const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
+    const [locationLabel, setLocationLabel] = useState('Acquiring...');
+    const [currentTime, setCurrentTime] = useState(new Date());
+
+    // Animations
+    const pulseAnim      = useRef(new Animated.Value(1)).current;
+    const fadeAnim       = useRef(new Animated.Value(0)).current;
+    const waveAnim       = useRef(new Animated.Value(0)).current;
+    const shakeFlashAnim = useRef(new Animated.Value(0)).current;
+    const shieldAnim     = useRef(new Animated.Value(1)).current;
+
+    const shakeCountRef      = useRef(0);
+    const lastShakeRef       = useRef(0);
+    const accelSubscription  = useRef<any>(null);
 
     useEffect(() => {
-        Animated.timing(fadeAnim, {
-            toValue: 1,
-            duration: 800,
-            useNativeDriver: true,
-        }).start();
+        Animated.timing(fadeAnim, { toValue: 1, duration: 700, useNativeDriver: true }).start();
+        startPulse();
+        startWave();
+        startShieldBreath();
+        getLocation();
+        const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+        return () => clearInterval(timer);
     }, []);
 
-    // Simulate score changes for demo
     useEffect(() => {
-        const interval = setInterval(() => {
-            setRiskScore((prev) => {
-                const change = Math.random() > 0.5 ? Math.floor(Math.random() * 5) : -Math.floor(Math.random() * 5);
-                return Math.max(0, Math.min(100, prev + change));
-            });
-        }, 10000);
-        return () => clearInterval(interval);
+        startShakeDetection();
+        return () => stopShakeDetection();
     }, []);
 
-    const handleEmergencyTrigger = () => {
-        navigation.navigate('AlertCountdown');
+    const startPulse = () => {
+        Animated.loop(Animated.sequence([
+            Animated.timing(pulseAnim, { toValue: 1.06, duration: 2000, useNativeDriver: true }),
+            Animated.timing(pulseAnim, { toValue: 1, duration: 2000, useNativeDriver: true }),
+        ])).start();
     };
 
-    const riskColor = getRiskColor(riskScore);
+    const startWave = () => {
+        Animated.loop(Animated.timing(waveAnim, { toValue: 1, duration: 4000, useNativeDriver: false })).start();
+    };
+
+    const startShieldBreath = () => {
+        Animated.loop(Animated.sequence([
+            Animated.timing(shieldAnim, { toValue: 1.08, duration: 1800, useNativeDriver: true }),
+            Animated.timing(shieldAnim, { toValue: 1, duration: 1800, useNativeDriver: true }),
+        ])).start();
+    };
+
+    const getLocation = async () => {
+        try {
+            const { status } = await Location.requestForegroundPermissionsAsync();
+            if (status !== 'granted') { setLocationLabel('Permission denied'); return; }
+            const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+            setLocation({ lat: loc.coords.latitude, lng: loc.coords.longitude });
+            const [geo] = await Location.reverseGeocodeAsync({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
+            if (geo) setLocationLabel(`${geo.district || geo.city || geo.region || 'Tracking'}`);
+        } catch {
+            setLocationLabel('Location active');
+        }
+    };
+
+    const startShakeDetection = () => {
+        console.log('[SHAKE] Starting shake detection (threshold:', SHAKE_THRESHOLD, ')');
+        Accelerometer.setUpdateInterval(100);
+        accelSubscription.current = Accelerometer.addListener(({ x, y, z }) => {
+            const magnitude = Math.sqrt(x * x + y * y + z * z);
+            const now = Date.now();
+            if (magnitude > SHAKE_THRESHOLD && now - lastShakeRef.current > 500) {
+                lastShakeRef.current = now;
+                shakeCountRef.current += 1;
+                setShakeCount(c => c + 1);
+                console.log(`[SHAKE] #${shakeCountRef.current}/3 — magnitude: ${magnitude.toFixed(2)}`);
+
+                Animated.sequence([
+                    Animated.timing(shakeFlashAnim, { toValue: 1, duration: 100, useNativeDriver: true }),
+                    Animated.timing(shakeFlashAnim, { toValue: 0, duration: 300, useNativeDriver: true }),
+                ]).start();
+
+                if (shakeCountRef.current >= 3) {
+                    if (now - lastShakeRef.current < SHAKE_COOLDOWN) {
+                        console.log('[SHAKE] 🚨 3 shakes — triggering SOS!');
+                        shakeCountRef.current = 0;
+                        triggerSOS();
+                    }
+                }
+
+                setTimeout(() => {
+                    if (Date.now() - lastShakeRef.current >= 1500) {
+                        shakeCountRef.current = 0;
+                        setShakeCount(0);
+                    }
+                }, 2000);
+            }
+        });
+    };
+
+    const stopShakeDetection = () => {
+        if (accelSubscription.current) {
+            accelSubscription.current.remove();
+            accelSubscription.current = null;
+        }
+    };
+
+    const triggerSOS = useCallback(() => {
+        Vibration.vibrate([0, 300, 100, 300, 100, 300]);
+        navigation.navigate('AlertCountdown', { user, location });
+    }, [navigation, user, location]);
+
+    const handleLogout = async () => {
+        Alert.alert('Logout', 'Are you sure you want to logout?', [
+            { text: 'Cancel', style: 'cancel' },
+            {
+                text: 'Logout',
+                style: 'destructive',
+                onPress: async () => {
+                    await AsyncStorage.removeItem('shesafe_current_user');
+                    navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+                },
+            },
+        ]);
+    };
+
+    const timeString = currentTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const dateString = currentTime.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
 
     return (
-        <View style={styles.container}>
-            <StatusBar barStyle="light-content" backgroundColor={Colors.background} />
+        <LinearGradient colors={['#1A0010', '#0D0508', '#080810']} style={styles.container}>
+            <StatusBar barStyle="light-content" />
+
+            {/* Shake flash overlay */}
+            <Animated.View style={[styles.flashOverlay, { opacity: shakeFlashAnim }]} pointerEvents="none" />
 
             {/* Header */}
             <Animated.View style={[styles.header, { opacity: fadeAnim }]}>
-                <View style={styles.headerLeft}>
-                    <ShieldIcon size={36} />
-                    <Text style={styles.headerTitle}>SheSafe</Text>
+                <View>
+                    <Text style={styles.greeting}>Hello, {user.name?.split(' ')[0]} 👋</Text>
+                    <Text style={styles.subGreeting}>{dateString}</Text>
                 </View>
-                <TouchableOpacity
-                    style={styles.settingsBtn}
-                    onPress={() => navigation.navigate('Settings')}
-                >
-                    <Text style={styles.settingsIcon}>⚙️</Text>
+                <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
+                    <Text style={styles.logoutIcon}>⬅️</Text>
                 </TouchableOpacity>
             </Animated.View>
 
-            {/* Main Risk Circle */}
-            <Animated.View style={[styles.riskContainer, { opacity: fadeAnim }]}>
-                <RiskCircle score={riskScore} size={240} />
+            {/* Time */}
+            <Animated.View style={[styles.timeContainer, { opacity: fadeAnim }]}>
+                <Text style={styles.timeClock}>{timeString}</Text>
             </Animated.View>
 
-            {/* Status info */}
-            <View style={styles.statusSection}>
-                <View style={[styles.statusDot, { backgroundColor: riskColor }]} />
-                <Text style={[styles.statusText, { color: riskColor }]}>
-                    {getRiskLevel(riskScore)}
-                </Text>
-            </View>
+            {/* Status cards */}
+            <Animated.View style={[styles.statusCards, { opacity: fadeAnim }]}>
+                <LinearGradient colors={['rgba(255,255,255,0.08)', 'rgba(255,255,255,0.03)']} style={styles.statusCard}>
+                    <Text style={styles.statusCardEmoji}>📍</Text>
+                    <Text style={styles.statusCardTitle}>Location</Text>
+                    <Text style={styles.statusCardValue} numberOfLines={1}>{locationLabel}</Text>
+                </LinearGradient>
+                <LinearGradient colors={['rgba(255,255,255,0.08)', 'rgba(255,255,255,0.03)']} style={styles.statusCard}>
+                    <Text style={styles.statusCardEmoji}>📱</Text>
+                    <Text style={styles.statusCardTitle}>Shake SOS</Text>
+                    <Text style={[styles.statusCardValue, { color: isMonitoring ? Colors.safe : Colors.textMuted }]}>
+                        {isMonitoring ? 'Active' : 'Off'}
+                    </Text>
+                </LinearGradient>
+                <LinearGradient colors={['rgba(255,255,255,0.08)', 'rgba(255,255,255,0.03)']} style={styles.statusCard}>
+                    <Text style={styles.statusCardEmoji}>🛡️</Text>
+                    <Text style={styles.statusCardTitle}>Protected</Text>
+                    <Text style={[styles.statusCardValue, { color: Colors.safe }]}>Yes</Text>
+                </LinearGradient>
+            </Animated.View>
 
-            <Text style={styles.monitoringText}>
-                🛡️ Monitoring your safety in real-time
-            </Text>
-
-            {/* Info cards */}
-            <View style={styles.infoCards}>
-                <View style={styles.infoCard}>
-                    <Text style={styles.infoEmoji}>📍</Text>
-                    <Text style={styles.infoTitle}>Location</Text>
-                    <Text style={styles.infoValue}>Active</Text>
+            {/* Shake count indicator */}
+            {shakeCount > 0 && (
+                <View style={styles.shakeIndicator}>
+                    <Text style={styles.shakeText}>🔔 Shake detected! {shakeCount}/3</Text>
                 </View>
-                <View style={styles.infoCard}>
-                    <Text style={styles.infoEmoji}>📱</Text>
-                    <Text style={styles.infoTitle}>Motion</Text>
-                    <Text style={styles.infoValue}>Normal</Text>
-                </View>
-                <View style={styles.infoCard}>
-                    <Text style={styles.infoEmoji}>🌙</Text>
-                    <Text style={styles.infoTitle}>Time Risk</Text>
-                    <Text style={styles.infoValue}>Low</Text>
-                </View>
-            </View>
-
-            {/* Emergency Button */}
-            <TouchableOpacity
-                style={styles.emergencyBtn}
-                onPress={handleEmergencyTrigger}
-                activeOpacity={0.8}
-            >
-                <Text style={styles.emergencyBtnText}>🚨 EMERGENCY</Text>
-                <Text style={styles.emergencySubtext}>Tap to trigger alert</Text>
-            </TouchableOpacity>
-
-            {/* Hidden I'm Safe button — shows only during active alert */}
-            {alertActive && (
-                <TouchableOpacity
-                    style={styles.safeBtn}
-                    onPress={() => setAlertActive(false)}
-                >
-                    <Text style={styles.safeBtnText}>✓ I'm Safe</Text>
-                </TouchableOpacity>
             )}
-        </View>
+
+            {/* Shield — replaces the old SOS button */}
+            <Animated.View style={[styles.shieldContainer, { opacity: fadeAnim }]}>
+                <Animated.View style={{ transform: [{ scale: shieldAnim }] }}>
+                    <LinearGradient
+                        colors={['rgba(192,57,43,0.18)', 'rgba(192,57,43,0.06)']}
+                        style={styles.shieldCircle}
+                    >
+                        <Text style={styles.shieldEmoji}>🛡️</Text>
+                        <Text style={styles.shieldTitle}>SheSafe</Text>
+                        <Text style={styles.shieldSubtitle}>You are protected</Text>
+
+                        {/* Glow rings */}
+                        <View style={[styles.glowRing, styles.ring1]} />
+                        <View style={[styles.glowRing, styles.ring2]} />
+                    </LinearGradient>
+                </Animated.View>
+
+                <Text style={styles.shakePrompt}>📳  Shake your phone 3 times to send SOS</Text>
+            </Animated.View>
+
+            {/* Safety status bar */}
+            <LinearGradient
+                colors={['rgba(16,185,129,0.12)', 'rgba(16,185,129,0.04)']}
+                style={styles.safeStatusBar}
+            >
+                <View style={styles.safeDot} />
+                <Text style={styles.safeStatusText}>
+                    🛡️ Monitoring active · Location tracking · Shake detection ON
+                </Text>
+            </LinearGradient>
+        </LinearGradient>
     );
 }
 
 const styles = StyleSheet.create({
-    container: {
-        flex: 1,
-        backgroundColor: Colors.background,
-        paddingHorizontal: Spacing.lg,
-        paddingTop: Spacing.xxl + 10,
+    container: { flex: 1 },
+    flashOverlay: {
+        ...(StyleSheet.absoluteFill as any),
+        backgroundColor: 'rgba(255,50,50,0.3)',
+        zIndex: 99,
     },
     header: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: Spacing.md,
+        paddingHorizontal: Spacing.lg,
+        paddingTop: Spacing.xxl + 10,
+        paddingBottom: Spacing.md,
     },
-    headerLeft: {
+    greeting: { fontSize: FontSizes.xl, fontWeight: '800', color: Colors.text },
+    subGreeting: { fontSize: FontSizes.xs, color: Colors.textSecondary, marginTop: 2 },
+    logoutBtn: {
+        width: 42, height: 42, borderRadius: 21,
+        backgroundColor: 'rgba(255,255,255,0.08)',
+        alignItems: 'center', justifyContent: 'center',
+        borderWidth: 1, borderColor: Colors.border,
+    },
+    logoutIcon: { fontSize: 18 },
+
+    timeContainer: { alignItems: 'center', paddingVertical: Spacing.sm },
+    timeClock: {
+        fontSize: FontSizes.xxl,
+        fontWeight: '300',
+        color: Colors.text,
+        letterSpacing: 4,
+        fontVariant: ['tabular-nums'],
+    },
+
+    statusCards: {
         flexDirection: 'row',
-        alignItems: 'center',
+        paddingHorizontal: Spacing.lg,
         gap: Spacing.sm,
+        marginVertical: Spacing.sm,
     },
-    headerTitle: {
-        fontSize: FontSizes.xl,
-        fontWeight: '800',
-        color: Colors.primary,
-        letterSpacing: 1,
-    },
-    settingsBtn: {
-        width: 44,
-        height: 44,
-        borderRadius: 22,
-        backgroundColor: Colors.surface,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
-    settingsIcon: {
-        fontSize: 22,
-    },
-    riskContainer: {
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginVertical: Spacing.lg,
-    },
-    statusSection: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: Spacing.sm,
-    },
-    statusDot: {
-        width: 10,
-        height: 10,
-        borderRadius: 5,
-    },
-    statusText: {
-        fontSize: FontSizes.lg,
-        fontWeight: '700',
-        textTransform: 'uppercase',
-        letterSpacing: 1,
-    },
-    monitoringText: {
-        color: Colors.textSecondary,
-        fontSize: FontSizes.sm,
-        textAlign: 'center',
-        marginTop: Spacing.sm,
-        marginBottom: Spacing.lg,
-    },
-    infoCards: {
-        flexDirection: 'row',
-        gap: Spacing.sm,
-        marginBottom: Spacing.xl,
-    },
-    infoCard: {
+    statusCard: {
         flex: 1,
-        backgroundColor: Colors.surface,
         borderRadius: BorderRadius.md,
-        padding: Spacing.md,
+        padding: Spacing.sm + 4,
         alignItems: 'center',
         borderWidth: 1,
-        borderColor: Colors.border,
+        borderColor: Colors.glassBorder,
     },
-    infoEmoji: {
-        fontSize: 24,
-        marginBottom: Spacing.xs,
+    statusCardEmoji: { fontSize: 22, marginBottom: 4 },
+    statusCardTitle: { fontSize: FontSizes.xs, color: Colors.textSecondary, fontWeight: '600' },
+    statusCardValue: { fontSize: FontSizes.xs, color: Colors.safe, fontWeight: '700', marginTop: 2, textAlign: 'center' },
+
+    shakeIndicator: {
+        marginHorizontal: Spacing.lg,
+        backgroundColor: 'rgba(239,68,68,0.2)',
+        borderRadius: BorderRadius.sm,
+        padding: Spacing.sm,
+        borderWidth: 1,
+        borderColor: 'rgba(239,68,68,0.4)',
+        alignItems: 'center',
+        marginBottom: Spacing.sm,
     },
-    infoTitle: {
-        color: Colors.textSecondary,
-        fontSize: FontSizes.xs,
-        fontWeight: '600',
+    shakeText: { color: Colors.danger, fontSize: FontSizes.sm, fontWeight: '700' },
+
+    // Shield replaces old SOS button
+    shieldContainer: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 18,
     },
-    infoValue: {
-        color: Colors.safe,
+    shieldCircle: {
+        width: 210,
+        height: 210,
+        borderRadius: 105,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderWidth: 1.5,
+        borderColor: 'rgba(192,57,43,0.35)',
+        position: 'relative',
+    },
+    shieldEmoji: { fontSize: 52, marginBottom: 4 },
+    shieldTitle: { fontSize: 22, fontWeight: '900', color: Colors.text, letterSpacing: 1 },
+    shieldSubtitle: { fontSize: FontSizes.xs, color: Colors.textSecondary, marginTop: 2 },
+    glowRing: {
+        position: 'absolute',
+        borderRadius: 999,
+        borderWidth: 1,
+    },
+    ring1: {
+        top: -14, left: -14, right: -14, bottom: -14,
+        borderColor: 'rgba(192,57,43,0.2)',
+    },
+    ring2: {
+        top: -28, left: -28, right: -28, bottom: -28,
+        borderColor: 'rgba(192,57,43,0.08)',
+    },
+    shakePrompt: {
         fontSize: FontSizes.sm,
-        fontWeight: '700',
-        marginTop: 2,
+        color: Colors.textSecondary,
+        textAlign: 'center',
+        letterSpacing: 0.3,
     },
-    emergencyBtn: {
-        backgroundColor: Colors.primary,
-        borderRadius: BorderRadius.xl,
-        paddingVertical: Spacing.lg,
+
+    safeStatusBar: {
+        margin: Spacing.lg,
+        borderRadius: BorderRadius.md,
+        paddingVertical: Spacing.sm + 4,
+        paddingHorizontal: Spacing.md,
+        flexDirection: 'row',
         alignItems: 'center',
-        borderWidth: 2,
-        borderColor: Colors.primaryLight,
-        shadowColor: Colors.primary,
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.4,
-        shadowRadius: 12,
-        elevation: 8,
+        gap: Spacing.sm,
+        borderWidth: 1,
+        borderColor: 'rgba(16,185,129,0.2)',
     },
-    emergencyBtnText: {
-        color: Colors.white,
-        fontSize: FontSizes.xl,
-        fontWeight: '800',
-        letterSpacing: 1,
-    },
-    emergencySubtext: {
-        color: 'rgba(255,255,255,0.7)',
-        fontSize: FontSizes.xs,
-        marginTop: 4,
-    },
-    safeBtn: {
-        backgroundColor: Colors.safe,
-        borderRadius: BorderRadius.lg,
-        paddingVertical: Spacing.md,
-        alignItems: 'center',
-        marginTop: Spacing.md,
-    },
-    safeBtnText: {
-        color: Colors.white,
-        fontSize: FontSizes.lg,
-        fontWeight: '700',
-    },
+    safeDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.safe },
+    safeStatusText: { color: Colors.safe, fontSize: FontSizes.xs, fontWeight: '600', flex: 1 },
 });

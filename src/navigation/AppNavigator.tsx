@@ -1,60 +1,58 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { isOnboardingComplete } from '../utils/storage';
+import { Colors } from '../theme';
 
-import PermissionsScreen from '../screens/PermissionsScreen';
-import ProfileSetupScreen from '../screens/ProfileSetupScreen';
-import PinSetupScreen from '../screens/PinSetupScreen';
-import DashboardScreen from '../screens/DashboardScreen';
+// Auth
+import LoginScreen from '../screens/LoginScreen';
+
+// Role dashboards
+import VictimDashboard from '../screens/DashboardScreen';
+import GuardianDashboard from '../screens/GuardianDashboard';
+import PoliceDashboard from '../screens/PoliceDashboard';
+
+// Alert flow
 import AlertCountdownScreen from '../screens/AlertCountdownScreen';
 import AlertFiredScreen from '../screens/AlertFiredScreen';
-import SettingsScreen from '../screens/SettingsScreen';
 
 const Stack = createNativeStackNavigator();
 
+/**
+ * AppNavigator — always starts at Login so victim always goes
+ * through PIN setup fresh and `shesafe_victim_pin` is always saved.
+ */
 export default function AppNavigator() {
-    const [initialRoute, setInitialRoute] = useState<string | null>(null);
-
-    useEffect(() => {
-        checkOnboarding();
-    }, []);
-
-    const checkOnboarding = async () => {
-        const complete = await isOnboardingComplete();
-        setInitialRoute(complete ? 'Dashboard' : 'Permissions');
-    };
-
-    if (!initialRoute) return null;
-
     return (
         <NavigationContainer>
             <Stack.Navigator
-                initialRouteName={initialRoute}
+                initialRouteName="Login"
                 screenOptions={{
                     headerShown: false,
-                    animation: 'slide_from_right',
-                    contentStyle: { backgroundColor: '#0D0D0D' },
+                    animation: 'fade',
+                    contentStyle: { backgroundColor: Colors.background },
                 }}
             >
-                {/* Onboarding */}
-                <Stack.Screen name="Permissions" component={PermissionsScreen} />
-                <Stack.Screen name="ProfileSetup" component={ProfileSetupScreen} />
-                <Stack.Screen name="PinSetup" component={PinSetupScreen} />
+                {/* Auth — always starts here */}
+                <Stack.Screen name="Login" component={LoginScreen} />
 
-                {/* Main App */}
-                <Stack.Screen name="Dashboard" component={DashboardScreen} />
+                {/* Victim flow */}
+                <Stack.Screen name="VictimDashboard" component={VictimDashboard} />
                 <Stack.Screen
                     name="AlertCountdown"
                     component={AlertCountdownScreen}
-                    options={{ gestureEnabled: false }}
+                    options={{ gestureEnabled: false, animation: 'slide_from_bottom' }}
                 />
                 <Stack.Screen
                     name="AlertFired"
                     component={AlertFiredScreen}
-                    options={{ gestureEnabled: false }}
+                    options={{ gestureEnabled: false, animation: 'slide_from_bottom' }}
                 />
-                <Stack.Screen name="Settings" component={SettingsScreen} />
+
+                {/* Guardian */}
+                <Stack.Screen name="GuardianDashboard" component={GuardianDashboard} />
+
+                {/* Police */}
+                <Stack.Screen name="PoliceDashboard" component={PoliceDashboard} />
             </Stack.Navigator>
         </NavigationContainer>
     );

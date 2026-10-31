@@ -18,7 +18,9 @@
         "NSLocationAlwaysAndWhenInUseUsageDescription": "SheSafe needs your location to find nearest police stations and share your position during emergencies",
         "NSLocationWhenInUseUsageDescription": "SheSafe needs your location for safety monitoring",
         "NSMicrophoneUsageDescription": "SheSafe records audio as evidence during emergency alerts",
-        "NSCameraUsageDescription": "SheSafe uses camera to capture evidence during emergencies"
+        "NSCameraUsageDescription": "SheSafe uses camera to capture evidence during emergencies",
+        "NSPhotoLibraryUsageDescription": "SheSafe saves evidence photos to your gallery",
+        "NSPhotoLibraryAddUsageDescription": "SheSafe saves evidence photos to your gallery"
       }
     },
     "android": {
@@ -36,7 +38,9 @@
         "CAMERA",
         "SEND_SMS",
         "VIBRATE",
-        "FOREGROUND_SERVICE"
+        "FOREGROUND_SERVICE",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_EXTERNAL_STORAGE"
       ]
     },
     "web": {
@@ -45,9 +49,11 @@
     "plugins": [
       "expo-location",
       "expo-sensors",
-      "expo-av",
+      "expo-audio",
       "expo-camera",
-      "expo-notifications"
+      "expo-notifications",
+      "expo-asset",
+      "expo-status-bar"
     ]
   }
 }
