@@ -10,6 +10,7 @@ import {
     Alert,
     Dimensions,
     ScrollView,
+    Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Accelerometer } from 'expo-sensors';
@@ -18,6 +19,8 @@ import { SheSafeUser } from '../utils/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { computeRisk, type RiskOutput } from '@shesafe/shared';
 import { ensureDemoPins } from '../services/pinService';
+import HoldToBeSafe from '../components/HoldToBeSafe';
+import { startDrain } from '../outbox/OutboxDrain';
 
 const { width } = Dimensions.get('window');
 const SHAKE_THRESHOLD = 2.5;
@@ -58,6 +61,7 @@ export default function VictimDashboard({ navigation, route }: any) {
 
     useEffect(() => {
         void ensureDemoPins();
+        startDrain(); // start outbox offline drain loop
         Animated.timing(fadeAnim, { toValue: 1, duration: 700, useNativeDriver: true }).start();
         startPulse();
         startWave();
@@ -176,8 +180,12 @@ export default function VictimDashboard({ navigation, route }: any) {
                 {/* Header */}
                 <Animated.View style={[styles.header, { opacity: fadeAnim }]}>
                     <View style={styles.headerLeft}>
-                        <View style={styles.avatarCircle}>
-                            <Text style={styles.avatarEmoji}>🌸</Text>
+                        <View style={styles.headerLogoContainer}>
+                            <Image
+                                source={require('../../assets/logo.png')}
+                                style={styles.headerLogoImage}
+                                resizeMode="cover"
+                            />
                         </View>
                         <View>
                             <Text style={styles.greeting}>Hello, {user.name?.split(' ')[0]}</Text>
@@ -260,6 +268,25 @@ export default function VictimDashboard({ navigation, route }: any) {
                     </View>
                 </TouchableOpacity>
 
+                {/* SheSafe AI Hero Banner */}
+                <View style={styles.heroBannerCard}>
+                    <Image
+                        source={require('../../assets/hero_banner.jpg')}
+                        style={styles.heroImage}
+                        resizeMode="cover"
+                    />
+                    <LinearGradient
+                        colors={['transparent', 'rgba(15, 23, 42, 0.88)']}
+                        style={styles.heroOverlay}
+                    >
+                        <View style={styles.heroPill}>
+                            <Text style={styles.heroPillText}>AI GUARDIAN ENCLAVE</Text>
+                        </View>
+                        <Text style={styles.heroTitle}>Walk with Confidence, Everywhere</Text>
+                        <Text style={styles.heroSub}>Encrypted audio & video telemetry · Rapid community Rakshak response</Text>
+                    </LinearGradient>
+                </View>
+
                 {/* Central Interactive SOS Button */}
                 <Animated.View style={[styles.sosSection, { opacity: fadeAnim }]}>
                     <TouchableOpacity
@@ -290,6 +317,13 @@ export default function VictimDashboard({ navigation, route }: any) {
                             ? `⚠️ Shake detected: ${shakeCount}/3!`
                             : 'Tap shield or shake phone 3 times to trigger immediate response'}
                     </Text>
+
+                    {/* Dead-man's switch */}
+                    <View style={{ width: '100%', paddingHorizontal: 8, marginTop: 12 }}>
+                        <HoldToBeSafe
+                            onTrigger={() => navigation.navigate('AlertCountdown', { user, location })}
+                        />
+                    </View>
                 </Animated.View>
 
                 {/* World-Class Prevention Tools Section */}
@@ -368,6 +402,24 @@ export default function VictimDashboard({ navigation, route }: any) {
                                 </View>
                             </LinearGradient>
                         </TouchableOpacity>
+
+                        {/* Train Detector (Gate 5 Calibration) */}
+                        <TouchableOpacity
+                            style={styles.toolCard}
+                            activeOpacity={0.8}
+                            onPress={() => navigation.navigate('SensorCalibration')}
+                        >
+                            <LinearGradient colors={['#F0FDF4', '#DCFCE7']} style={styles.toolCardGrad}>
+                                <View style={[styles.toolIconBox, { backgroundColor: '#BBF7D0' }]}>
+                                    <Text style={styles.toolEmoji}>🎯</Text>
+                                </View>
+                                <Text style={styles.toolTitle}>Train Detector</Text>
+                                <Text style={styles.toolDesc}>Calibrate shake & false rejection</Text>
+                                <View style={styles.toolArrow}>
+                                    <Text style={[styles.toolArrowText, { color: '#16A34A' }]}>Calibrate Now →</Text>
+                                </View>
+                            </LinearGradient>
+                        </TouchableOpacity>
                     </View>
                 </View>
 
@@ -411,6 +463,19 @@ const styles = StyleSheet.create({
         borderColor: '#F1F5F9',
     },
     headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+    headerLogoContainer: {
+        width: 44,
+        height: 44,
+        borderRadius: 14,
+        overflow: 'hidden',
+        borderWidth: 1.5,
+        borderColor: '#E2E8F0',
+        backgroundColor: '#0F172A',
+    },
+    headerLogoImage: {
+        width: '100%',
+        height: '100%',
+    },
     avatarCircle: {
         width: 44,
         height: 44,
@@ -422,6 +487,62 @@ const styles = StyleSheet.create({
     avatarEmoji: { fontSize: 22 },
     greeting: { fontSize: 18, fontWeight: '800', color: '#0F172A' },
     subGreeting: { fontSize: 12, color: '#64748B', marginTop: 2, fontWeight: '500' },
+    heroBannerCard: {
+        marginHorizontal: 20,
+        marginTop: 14,
+        marginBottom: 8,
+        height: 155,
+        borderRadius: 20,
+        overflow: 'hidden',
+        position: 'relative',
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+        shadowColor: '#0F172A',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.08,
+        shadowRadius: 12,
+        elevation: 3,
+    },
+    heroImage: {
+        width: '100%',
+        height: '100%',
+    },
+    heroOverlay: {
+        position: 'absolute',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        top: 0,
+        justifyContent: 'flex-end',
+        padding: 14,
+    },
+    heroPill: {
+        alignSelf: 'flex-start',
+        backgroundColor: 'rgba(225, 29, 72, 0.85)',
+        borderRadius: 12,
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        marginBottom: 6,
+    },
+    heroPillText: {
+        color: '#FFFFFF',
+        fontSize: 9,
+        fontWeight: '900',
+        letterSpacing: 1,
+    },
+    heroTitle: {
+        fontSize: 16,
+        fontWeight: '800',
+        color: '#FFFFFF',
+        lineHeight: 20,
+    },
+    heroSub: {
+        fontSize: 11,
+        color: '#E2E8F0',
+        marginTop: 3,
+        fontWeight: '500',
+        lineHeight: 15,
+    },
     headerRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
     activePill: {
         flexDirection: 'row',

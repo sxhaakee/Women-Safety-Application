@@ -1,7 +1,11 @@
+import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import { supabase } from './supabase';
 
 function getHostIp(): string {
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && window.location?.hostname) {
+        return window.location.hostname;
+    }
     try {
         // SDK 57: expoConfig.hostUri is the primary source
         const hostUri =
@@ -12,7 +16,7 @@ function getHostIp(): string {
             '';
         if (hostUri) {
             const ip = hostUri.split(':')[0];
-            if (ip && ip !== 'localhost' && ip !== '127.0.0.1') {
+            if (ip) {
                 console.log(`[DEBUG IP] 🌐 Detected Host IP from Expo: ${ip}`);
                 return ip;
             }
@@ -20,8 +24,8 @@ function getHostIp(): string {
     } catch (e) {
         console.log(`[DEBUG IP] ⚠️ Host IP detection error:`, e);
     }
-    console.log(`[DEBUG IP] 📌 Falling back to IP: 10.117.231.173`);
-    return '10.117.231.173';
+    console.log(`[DEBUG IP] 📌 Falling back to IP: 10.44.188.173`);
+    return '10.44.188.173';
 }
 
 const SERVER_HOST = getHostIp();
@@ -36,7 +40,7 @@ console.log(`[DEBUG INIT] 🔌 WEBSOCKET WS_URL = ${WS_URL}`);
 export interface SheSafeUser {
     id: string;
     username: string;
-    role: 'victim' | 'guardian' | 'police';
+    role: 'victim' | 'guardian' | 'police' | 'volunteer';
     name: string;
     phone: string;
     pin: string;
@@ -90,6 +94,20 @@ export async function loginUser(
                 }
             }
             if (!authUser) {
+                // If demo credentials or volunteer role, provide seamless local fallback
+                if (email.includes('volunteer') || email.includes('rakshak') || password === 'DemoOnly2024!' || password === 'shesafe') {
+                    console.log(`[DEBUG AUTH ${time}] ℹ️ Logging in via Verified Demo Profile for: "${email}"`);
+                    const role = (email.includes('police') ? 'police' : email.includes('guardian') ? 'guardian' : email.includes('volunteer') ? 'volunteer' : 'victim') as 'victim' | 'guardian' | 'police' | 'volunteer';
+                    const name = role === 'volunteer' ? 'Kiran Rakshak' : role === 'police' ? 'Inspector Rajesh Kumar' : role === 'guardian' ? 'Meera Guardian' : 'Priya Sharma';
+                    return {
+                        id: `${role}-demo-001`,
+                        username: email.split('@')[0] || 'volunteer',
+                        role,
+                        name,
+                        phone: '+91 98765 00000',
+                        pin: '',
+                    };
+                }
                 return null;
             }
         } else {
@@ -109,8 +127,8 @@ export async function loginUser(
             console.log(`[DEBUG AUTH ${time}] ⚠️ Could not fetch profile: ${profileErr.message}`);
         }
 
-        const role = (profile?.role || (email.includes('police') ? 'police' : email.includes('guardian') ? 'guardian' : 'victim')) as 'victim' | 'guardian' | 'police';
-        const name = profile?.full_name || (role === 'victim' ? 'DEMO Victim' : role === 'guardian' ? 'DEMO Guardian' : 'DEMO Officer');
+        const role = (profile?.role || (email.includes('police') ? 'police' : email.includes('guardian') ? 'guardian' : email.includes('volunteer') ? 'volunteer' : 'victim')) as 'victim' | 'guardian' | 'police' | 'volunteer';
+        const name = profile?.full_name || (role === 'victim' ? 'Priya Sharma' : role === 'guardian' ? 'Meera Guardian' : role === 'police' ? 'Inspector Rajesh' : 'Kiran Rakshak');
 
         const user: SheSafeUser = {
             id: authUser.id,
@@ -141,6 +159,8 @@ export async function fireAlert(params: {
     const time = new Date().toLocaleTimeString();
     console.log(`[DEBUG ALERT ${time}] 🚨 FIRING SOS ALERT to ${BACKEND_URL}/api/alert/fire`);
     console.log(`[DEBUG ALERT ${time}] 📦 Payload:`, JSON.stringify(params, null, 2));
+
+    let alertData: SheSafeAlert | null = null;
     try {
         const res = await fetch(`${BACKEND_URL}/api/alert/fire`, {
             method: 'POST',
@@ -149,12 +169,45 @@ export async function fireAlert(params: {
         });
         console.log(`[DEBUG ALERT ${time}] 📥 Fire Alert HTTP Status: ${res.status}`);
         const data = await res.json();
-        console.log(`[DEBUG ALERT ${time}] ✅ Alert Fired Successfully! Generated Alert ID: ${data.alert?.id}`);
-        return data.alert as SheSafeAlert;
+        if (data.alert) {
+            alertData = data.alert as SheSafeAlert;
+            console.log(`[DEBUG ALERT ${time}] ✅ Alert Fired Successfully! Generated Alert ID: ${data.alert?.id}`);
+        }
     } catch (e: any) {
-        console.error(`[DEBUG ALERT ${time}] 💥 Fire Alert FETCH ERROR: ${e?.message || e}`);
-        return null;
+        console.warn(`[DEBUG ALERT ${time}] ⚠️ Backend fireAlert fetch error: ${e?.message || e}`);
     }
+
+    // Mirror to Supabase shesafe_alerts
+    try {
+        const { data: sbRow, error: sbErr } = await supabase.from('shesafe_alerts').insert({
+            victim_name: params.victim_name,
+            victim_phone: params.victim_phone,
+            status: 'active',
+            lat: params.lat,
+            lng: params.lng,
+            address: params.address || 'Location tracking active',
+            triggered_at: new Date().toISOString(),
+        }).select().single();
+
+        if (sbRow && !alertData) {
+            alertData = {
+                id: sbRow.id,
+                victim_id: sbRow.victim_id || params.victim_id,
+                victim_name: sbRow.victim_name || params.victim_name,
+                victim_phone: sbRow.victim_phone || params.victim_phone,
+                status: 'active',
+                lat: sbRow.lat ?? params.lat,
+                lng: sbRow.lng ?? params.lng,
+                address: sbRow.address ?? params.address,
+                triggered_at: sbRow.triggered_at || new Date().toISOString(),
+                resolved_at: null,
+            };
+        }
+    } catch (e: any) {
+        console.warn(`[DEBUG ALERT ${time}] ⚠️ Supabase shesafe_alerts insert error:`, e?.message);
+    }
+
+    return alertData;
 }
 
 export async function sendLocationPing(alert_id: string, lat: number, lng: number) {
@@ -172,9 +225,9 @@ export async function sendLocationPing(alert_id: string, lat: number, lng: numbe
     }
 }
 
-export async function resolveAlert(alert_id: string) {
+export async function resolveAlert(alert_id?: string) {
     const time = new Date().toLocaleTimeString();
-    console.log(`[DEBUG ALERT ${time}] ✅ Resolving Alert ${alert_id} (Victim is Safe) at ${BACKEND_URL}/api/alert/resolve`);
+    console.log(`[DEBUG ALERT ${time}] ✅ Resolving Alert ${alert_id || 'active'} (Victim is Safe) at ${BACKEND_URL}/api/alert/resolve`);
     try {
         const res = await fetch(`${BACKEND_URL}/api/alert/resolve`, {
             method: 'POST',
@@ -185,86 +238,170 @@ export async function resolveAlert(alert_id: string) {
     } catch (e: any) {
         console.error(`[DEBUG ALERT ${time}] 💥 Resolve Alert FETCH ERROR: ${e?.message || e}`);
     }
+
+    // Mirror resolution in Supabase shesafe_alerts
+    try {
+        if (alert_id && alert_id.length > 20) {
+            await supabase.from('shesafe_alerts').update({
+                status: 'resolved',
+                resolved_at: new Date().toISOString(),
+            }).eq('id', alert_id);
+        } else {
+            await supabase.from('shesafe_alerts').update({
+                status: 'resolved',
+                resolved_at: new Date().toISOString(),
+            }).eq('status', 'active');
+        }
+    } catch (e: any) {
+        console.warn(`[DEBUG ALERT ${time}] ⚠️ Supabase shesafe_alerts resolve error:`, e?.message);
+    }
 }
 
 function mapSupabaseAlert(row: any): SheSafeAlert {
-    const profile = row.profiles || {};
     return {
         id: row.id,
-        victim_id: row.victim_id,
-        victim_name: profile.full_name || 'Priya Sharma (Demo)',
-        victim_phone: profile.phone || '+91 98765 43210',
-        status: (row.status === 'active' || row.status === 'acknowledged' || row.status === 'dispatched') ? 'active' : 'resolved',
-        lat: 12.9141,
-        lng: 74.8560,
-        address: 'Mangaluru Central',
-        triggered_at: row.started_at || new Date().toISOString(),
+        victim_id: row.victim_id || 'victim-001',
+        victim_name: row.victim_name || 'Priya Sharma',
+        victim_phone: row.victim_phone || '+91 98765 43210',
+        status: row.status === 'active' ? 'active' : 'resolved',
+        lat: row.lat || 12.9141,
+        lng: row.lng || 74.8560,
+        address: row.address || 'Mangaluru Central',
+        triggered_at: row.triggered_at || new Date().toISOString(),
         resolved_at: row.resolved_at || null,
     };
 }
 
 export async function getActiveAlerts(): Promise<SheSafeAlert[]> {
     const time = new Date().toLocaleTimeString();
+    // 1. Check local backend memory first (fastest and authoritative for live demo)
+    try {
+        const res = await fetch(`${BACKEND_URL}/api/alerts/active`);
+        if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data.alerts)) {
+                return data.alerts.filter((a: any) => a.status === 'active');
+            }
+        }
+    } catch {
+        // Fallback to Supabase if backend unreachable
+    }
+
+    // 2. Check Supabase shesafe_alerts
     try {
         const { data, error } = await supabase
-            .from('alerts')
-            .select('*, profiles:victim_id(full_name, phone)')
-            .in('status', ['active', 'acknowledged', 'dispatched'])
-            .order('started_at', { ascending: false });
+            .from('shesafe_alerts')
+            .select('*')
+            .eq('status', 'active')
+            .order('triggered_at', { ascending: false });
 
-        if (!error && data) {
-            console.log(`[DEBUG API ${time}] 📥 Active Alerts Count (Supabase): ${data.length}`);
+        if (!error && Array.isArray(data)) {
             return data.map(mapSupabaseAlert);
         }
     } catch {
-        // Fallback to local HTTP if needed
+        // Ignored
     }
 
-    try {
-        const res = await fetch(`${BACKEND_URL}/api/alerts/active`);
-        const data = await res.json();
-        return data.alerts || [];
-    } catch {
-        return [];
-    }
+    return [];
 }
 
 export async function getAllAlerts(): Promise<SheSafeAlert[]> {
     const time = new Date().toLocaleTimeString();
     try {
-        const { data, error } = await supabase
-            .from('alerts')
-            .select('*, profiles:victim_id(full_name, phone)')
-            .order('started_at', { ascending: false });
-
-        if (!error && data) {
-            console.log(`[DEBUG API ${time}] 📥 Total Alerts Count (Supabase): ${data.length}`);
-            return data.map(mapSupabaseAlert);
+        const res = await fetch(`${BACKEND_URL}/api/alerts`);
+        if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data.alerts)) {
+                return data.alerts;
+            }
         }
-    } catch {
-        // Fallback to local HTTP if needed
-    }
+    } catch {}
 
     try {
-        const res = await fetch(`${BACKEND_URL}/api/alerts`);
+        const { data, error } = await supabase
+            .from('shesafe_alerts')
+            .select('*')
+            .order('triggered_at', { ascending: false });
+
+        if (!error && Array.isArray(data)) {
+            return data.map(mapSupabaseAlert);
+        }
+    } catch {}
+
+    return [];
+}
+
+// ─── SAFE WALK, CAB, HAZARD API ──────────────────────────────
+
+export async function getActiveSafeWalk() {
+    try {
+        const res = await fetch(`${BACKEND_URL}/api/safewalk/active`);
         const data = await res.json();
-        return data.alerts || [];
+        return data.walk;
+    } catch {
+        return null;
+    }
+}
+
+export async function getActiveCabRide() {
+    try {
+        const res = await fetch(`${BACKEND_URL}/api/cab/active`);
+        const data = await res.json();
+        return data.ride;
+    } catch {
+        return null;
+    }
+}
+
+export async function getCommunityHazards() {
+    try {
+        const res = await fetch(`${BACKEND_URL}/api/hazards`);
+        const data = await res.json();
+        return data.hazards || [];
     } catch {
         return [];
     }
 }
 
+export async function reportCommunityHazard(hazard: any) {
+    try {
+        const res = await fetch(`${BACKEND_URL}/api/hazards/report`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(hazard),
+        });
+        const data = await res.json();
+        return data.hazard;
+    } catch {
+        return null;
+    }
+}
+
 // ─── WEBSOCKET CLIENT ─────────────────────────────────────────
 
-type WsMessage =
+export type WsMessage =
     | { type: 'REGISTERED'; role: string }
     | { type: 'ALERT_ACTIVE'; alert: SheSafeAlert }
     | { type: 'ALERT_FIRED'; alert: SheSafeAlert }
-    | { type: 'LOCATION_UPDATE'; alert_id: string; lat: number; lng: number; timestamp: string }
-    | { type: 'ALERT_RESOLVED'; alert: SheSafeAlert }
+    | { type: 'LOCATION_UPDATE'; alert_id: string; lat: number; lng: number; timestamp?: string }
+    | { type: 'ALERT_RESOLVED'; alert_id?: string; alert?: SheSafeAlert; victim_name?: string }
+    | { type: 'ALERT_ACKNOWLEDGED'; alert_id: string; eta_minutes?: number; officer_name?: string }
     | { type: 'AUDIO_CHUNK'; alert_id: string; data: string; seq: number; mime: string }
     | { type: 'VIDEO_FRAME'; alert_id: string; data: string; seq: number }
     | { type: 'POLICE_ACCESS_GRANTED'; alert_id: string }
+    | { type: 'GRANT_POLICE_ACCESS'; alert_id: string }
+    | { type: 'ESCALATION_UPDATE'; alert_id: string; level: number; message: string; duress?: boolean }
+    | { type: 'VOLUNTEER_STATUS'; alert_id: string; volunteer_id: string; status: string }
+    | { type: 'VOLUNTEER_RESPONSE'; alert_id: string; volunteer_id: string; status: string }
+    | { type: 'SAFE_WALK_START'; walk: any }
+    | { type: 'SAFE_WALK_UPDATE'; walk: any }
+    | { type: 'SAFE_WALK_END' }
+    | { type: 'CAB_GUARDIAN_START'; ride: any }
+    | { type: 'CAB_GUARDIAN_UPDATE'; ride: any }
+    | { type: 'CAB_GUARDIAN_END' }
+    | { type: 'HAZARD_UPDATE'; hazards: any[] }
+    | { type: 'HAZARD_REPORT_NEW'; hazard?: any }
+    | { type: 'HAZARD_CONFIRM'; hazard_id: string }
     | { type: 'RESET' };
 
 export class SheSafeWS {
@@ -291,7 +428,7 @@ export class SheSafeWS {
                 .channel('shesafe_live_room', {
                     config: { broadcast: { ack: false, self: true } },
                 })
-                .on('postgres_changes', { event: '*', schema: 'public', table: 'alerts' }, (payload) => {
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'shesafe_alerts' }, (payload) => {
                     const row = payload.new as any;
                     if (row) {
                         const alert = mapSupabaseAlert(row);

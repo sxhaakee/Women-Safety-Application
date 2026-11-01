@@ -11,6 +11,7 @@ import {
     Platform,
     ActivityIndicator,
     Dimensions,
+    Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -45,12 +46,21 @@ const ROLE_CONFIG = {
         bg: ['#081030', '#050A20', '#080810'] as const,
         desc: 'Receive Alerts · Locate Her · Manage Cases',
     },
+    volunteer: {
+        label: 'Volunteer / Rakshak',
+        emoji: '🤝',
+        color: '#059669',
+        colorLight: '#10B981',
+        bg: ['#042F2E', '#022120', '#080810'] as const,
+        desc: 'Respond to Nearby SOS · First Responder · Community Patrol',
+    },
 };
 
 const QUICK_FILL = [
     { label: 'She / Her', user: 'victim@demo.shesafe',   pass: 'DemoOnly2024!', role: 'victim'   },
     { label: 'Guardian',  user: 'guardian@demo.shesafe', pass: 'DemoOnly2024!', role: 'guardian' },
     { label: 'Police',    user: 'police@demo.shesafe',   pass: 'DemoOnly2024!', role: 'police'   },
+    { label: 'Volunteer', user: 'volunteer@demo.shesafe', pass: 'DemoOnly2024!', role: 'volunteer' },
 ];
 
 // ─── PIN SETUP STEP (victim sets their own code) ──────────────
@@ -273,7 +283,8 @@ export default function LoginScreen({ navigation }: any) {
         setDetectedRole(
             u.includes('victim') ? 'victim' :
             u.includes('guardian') ? 'guardian' :
-            u.includes('police') ? 'police' : null
+            u.includes('police') ? 'police' :
+            u.includes('volunteer') || u.includes('rakshak') ? 'volunteer' : null
         );
         setError('');
     }, [username]);
@@ -306,7 +317,7 @@ export default function LoginScreen({ navigation }: any) {
         }
         // Save session (without PIN yet — victim will set it next)
         await AsyncStorage.setItem('shesafe_current_user', JSON.stringify(user));
-        // Only victim sets a PIN — guardian/police go straight to dashboard
+        // Only victim sets a PIN — guardian/police/volunteer go straight to dashboard
         if (user.role === 'victim') {
             setLoggedInUser(user);
         } else {
@@ -316,9 +327,10 @@ export default function LoginScreen({ navigation }: any) {
 
     const navigateByRole = (user: SheSafeUser, pin?: string) => {
         const route =
-            user.role === 'victim'   ? 'VictimDashboard' :
-            user.role === 'guardian' ? 'GuardianDashboard' :
-                                       'PoliceDashboard';
+            user.role === 'victim'    ? 'VictimDashboard' :
+            user.role === 'guardian'  ? 'GuardianDashboard' :
+            user.role === 'police'    ? 'PoliceDashboard' :
+                                        'VolunteerDashboard';
         // Pass the user-set PIN through to the victim dashboard
         navigation.reset({ index: 0, routes: [{ name: route, params: { user: { ...user, pin: pin || '' } } }] });
     };
@@ -350,12 +362,13 @@ export default function LoginScreen({ navigation }: any) {
 
                     {/* Shield logo */}
                     <Animated.View style={{ transform: [{ scale: shieldScale }] }}>
-                        <LinearGradient
-                            colors={currentRole ? [currentRole.color, currentRole.colorLight] : ['#C0392B', '#E74C3C']}
-                            style={styles.logoGradient}
-                        >
-                            <Text style={styles.logoEmoji}>🛡️</Text>
-                        </LinearGradient>
+                        <View style={styles.logoContainer}>
+                            <Image
+                                source={require('../../assets/logo.png')}
+                                style={styles.logoImage}
+                                resizeMode="cover"
+                            />
+                        </View>
                     </Animated.View>
 
                     <Text style={styles.appName}>SheSafe</Text>
@@ -482,6 +495,24 @@ const styles = StyleSheet.create({
         paddingBottom: Spacing.xl,
         alignItems: 'center',
         gap: Spacing.md,
+    },
+    logoContainer: {
+        width: 96,
+        height: 96,
+        borderRadius: 28,
+        overflow: 'hidden',
+        shadowColor: Colors.primary,
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.6,
+        shadowRadius: 24,
+        elevation: 16,
+        borderWidth: 2,
+        borderColor: 'rgba(255,255,255,0.2)',
+        backgroundColor: '#0F172A',
+    },
+    logoImage: {
+        width: '100%',
+        height: '100%',
     },
     logoGradient: {
         width: 92,

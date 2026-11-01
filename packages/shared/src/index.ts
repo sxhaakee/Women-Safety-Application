@@ -8,6 +8,7 @@ export * from './detect/snatchDetector';
 export * from './detect/screamDetector';
 export * from './detect/fusion';
 export * from './risk/riskEngine';
+export * from './risk/mlSafetyEngine';
 export * from './alert/machine';
 export * from './chain/hashChain';
 export * from './i18n/catalogs';

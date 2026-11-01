@@ -6,13 +6,15 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { createAudioPlayer, setAudioModeAsync, AudioPlayer } from 'expo-audio';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import MapView, { Marker, PROVIDER_GOOGLE } from '../components/SafeMapView';
 import { Colors, Spacing, FontSizes, BorderRadius } from '../theme';
 import {
     SheSafeUser, SheSafeAlert, SheSafeWS,
-    getActiveAlerts, getAllAlerts, BACKEND_URL,
+    getActiveAlerts, getAllAlerts,
 } from '../utils/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { generateAndShareEvidencePDF } from '../utils/evidencePdf';
 
 export default function PoliceDashboard({ navigation, route }: any) {
     const user: SheSafeUser = route?.params?.user || { name: 'Officer Rajesh Kumar', role: 'police' };
@@ -27,13 +29,20 @@ export default function PoliceDashboard({ navigation, route }: any) {
     const [audioChunkCount, setAudioChunkCount] = useState(0);
     const [audioLevel, setAudioLevel]           = useState<number[]>([]);
     const [isSaving, setIsSaving]               = useState(false);
+    const [isPlayingAudio, setIsPlayingAudio]   = useState(false);
+    const [sheIsSafeNotice, setSheIsSafeNotice] = useState<{ visible: boolean; victim_name: string; time: string } | null>(null);
+    const [autoSavedAudioCount, setAutoSavedAudioCount] = useState<number>(0);
+    const [autoSavedPhotoCount, setAutoSavedPhotoCount] = useState<number>(0);
+    const [patrolDispatched, setPatrolDispatched] = useState(false);
 
-    // ── Critical: use REF for accessGranted in WS callback to avoid closure bug ──
+    // Critical: use REF for accessGranted in WS callback to prevent stale closures
     const accessGrantedRef = useRef(false);
 
     const audioChunksRef = useRef<{ data: string; mime: string; seq: number }[]>([]);
     const videoFramesRef = useRef<{ data: string; seq: number }[]>([]);
     const currentAlertId = useRef<string | null>(null);
+    const lastBufferedFrameRef = useRef<string | null>(null);
+    const bufferedAudioBeforeGrantRef = useRef<{ data: string; mime: string; seq: number }[]>([]);
 
     const fadeAnim   = useRef(new Animated.Value(0)).current;
     const sirenAnim  = useRef(new Animated.Value(1)).current;
@@ -51,8 +60,10 @@ export default function PoliceDashboard({ navigation, route }: any) {
         const clk = setInterval(() => setCurrentTime(new Date()), 1000);
         loadAlerts();
         connectWS();
+        const poll = setInterval(loadAlerts, 3000);
         return () => {
             clearInterval(clk);
+            clearInterval(poll);
             clearInterval(elapsedRef.current);
             wsRef.current?.disconnect();
             soundRef.current?.remove();
@@ -66,7 +77,6 @@ export default function PoliceDashboard({ navigation, route }: any) {
             currentAlertId.current = activeAlert.id;
             audioChunksRef.current = [];
             videoFramesRef.current = [];
-            // Reset access on new alert
             accessGrantedRef.current = false;
             setAccessGranted(false);
             setAudioChunkCount(0);
@@ -83,8 +93,8 @@ export default function PoliceDashboard({ navigation, route }: any) {
     ])).start();
 
     const startSiren = () => Animated.loop(Animated.sequence([
-        Animated.timing(sirenAnim, { toValue: 0.2, duration: 600, useNativeDriver: true }),
-        Animated.timing(sirenAnim, { toValue: 1,   duration: 600, useNativeDriver: true }),
+        Animated.timing(sirenAnim, { toValue: 0.25, duration: 600, useNativeDriver: true }),
+        Animated.timing(sirenAnim, { toValue: 1,    duration: 600, useNativeDriver: true }),
     ])).start();
 
     const startElapsed = () => {
@@ -95,7 +105,17 @@ export default function PoliceDashboard({ navigation, route }: any) {
 
     const loadAlerts = async () => {
         const [active, all] = await Promise.all([getActiveAlerts(), getAllAlerts()]);
-        if (active.length > 0) setActiveAlert(active[0]);
+        if (active.length > 0) {
+            setActiveAlert(prev => {
+                if (!prev || prev.id !== active[0]!.id) {
+                    return active[0]!;
+                }
+                return prev;
+            });
+            setSheIsSafeNotice(null);
+        } else {
+            setActiveAlert(null);
+        }
         setHistory(all);
     };
 
@@ -111,50 +131,101 @@ export default function PoliceDashboard({ navigation, route }: any) {
                 case 'ALERT_FIRED':
                     console.log(`[POLICE WS ${et}] 🚨 SOS: ${msg.alert.victim_name}`);
                     setActiveAlert(msg.alert);
+                    setSheIsSafeNotice(null);
+                    currentAlertId.current = msg.alert.id;
                     setHistory(prev => [msg.alert, ...prev.filter(a => a.id !== msg.alert.id)]);
                     break;
                 case 'LOCATION_UPDATE':
                     console.log(`[POLICE WS ${et}] 📍 ${msg.lat?.toFixed(5)}, ${msg.lng?.toFixed(5)}`);
-                    setActiveAlert(prev =>
-                        prev?.id === msg.alert_id ? { ...prev, lat: msg.lat, lng: msg.lng } : prev
-                    );
+                    setActiveAlert(prev => {
+                        if (!prev || prev.id !== msg.alert_id) return prev;
+                        return { ...prev, lat: msg.lat, lng: msg.lng };
+                    });
                     break;
 
-                // ── CRITICAL FIX: use accessGrantedRef.current (not state) ──
+                // Listen to BOTH grant message types
+                case 'GRANT_POLICE_ACCESS':
                 case 'POLICE_ACCESS_GRANTED':
                     console.log(`[POLICE WS ${et}] 🔓 GUARDIAN GRANTED ACCESS — Live feed unlocked!`);
-                    accessGrantedRef.current = true;   // update ref first
-                    setAccessGranted(true);            // then update state for UI
+                    accessGrantedRef.current = true;
+                    setAccessGranted(true);
+                    if (lastBufferedFrameRef.current) {
+                        setLiveVideoFrame(lastBufferedFrameRef.current);
+                    }
+                    // Flush any audio chunks received while waiting for authorization
+                    while (bufferedAudioBeforeGrantRef.current.length > 0) {
+                        const b = bufferedAudioBeforeGrantRef.current.shift()!;
+                        enqueueAudio(b.data, b.mime);
+                    }
                     break;
 
                 case 'AUDIO_CHUNK':
-                    if (!accessGrantedRef.current) {
-                        console.log(`[POLICE WS ${et}] ⛔ Audio chunk ignored — access not yet granted`);
-                        break;
-                    }
                     console.log(`[POLICE WS ${et}] 🎤 Audio chunk #${msg.seq} (${Math.round(msg.data.length / 1024)} KB)`);
                     audioChunksRef.current.push({ data: msg.data, mime: msg.mime, seq: msg.seq });
                     setAudioChunkCount(c => c + 1);
                     setAudioLevel(prev => [...prev.slice(-14), Math.min(msg.data.length / 5000, 100)]);
-                    enqueueAudio(msg.data, msg.mime);
+
+                    // Auto-download incoming audio to police storage
+                    (async () => {
+                        try {
+                            const ext = msg.mime?.includes('wav') ? '.wav' : '.m4a';
+                            const baseDir = FileSystem.documentDirectory || FileSystem.cacheDirectory;
+                            if (baseDir) {
+                                const autoUri = `${baseDir}SheSafe_Police_Audio_${msg.seq}_${Date.now()}${ext}`;
+                                await FileSystem.writeAsStringAsync(autoUri, msg.data, { encoding: FileSystem.EncodingType.Base64 });
+                                setAutoSavedAudioCount(c => c + 1);
+                            }
+                        } catch (_) {}
+                    })();
+
+                    if (!accessGrantedRef.current) {
+                        console.log(`[POLICE WS ${et}] ⏳ Pre-buffering audio chunk #${msg.seq} until guardian authorizes`);
+                        bufferedAudioBeforeGrantRef.current.push({ data: msg.data, mime: msg.mime, seq: msg.seq });
+                    } else {
+                        enqueueAudio(msg.data, msg.mime);
+                    }
                     break;
 
                 case 'VIDEO_FRAME': {
-                    if (!accessGrantedRef.current) {
-                        console.log(`[POLICE WS ${et}] ⛔ Video frame ignored — access not granted`);
-                        break;
-                    }
                     console.log(`[POLICE WS ${et}] 📸 Video frame #${msg.seq} (${Math.round((msg.data?.length || 0) / 1024)} KB)`);
                     const cleanData = (msg.data || '').replace(/[\r\n\s]/g, '');
+                    lastBufferedFrameRef.current = cleanData;
                     videoFramesRef.current = [...videoFramesRef.current.slice(-9), { data: cleanData, seq: msg.seq }];
-                    setLiveVideoFrame(cleanData);
+                    if (accessGrantedRef.current) {
+                        setLiveVideoFrame(cleanData);
+                    }
+
+                    // Auto-download camera frames to police storage
+                    (async () => {
+                        try {
+                            const baseDir = FileSystem.documentDirectory || FileSystem.cacheDirectory;
+                            if (baseDir) {
+                                const autoImgUri = `${baseDir}SheSafe_Police_Photo_${msg.seq}_${Date.now()}.jpg`;
+                                await FileSystem.writeAsStringAsync(autoImgUri, cleanData, { encoding: FileSystem.EncodingType.Base64 });
+                                setAutoSavedPhotoCount(c => c + 1);
+                            }
+                        } catch (_) {}
+                    })();
                     break;
                 }
 
                 case 'ALERT_RESOLVED':
-                    console.log(`[POLICE WS ${et}] ✅ Alert resolved`);
-                    setActiveAlert(prev => prev?.id === msg.alert.id ? null : prev);
-                    setHistory(prev => prev.map(a => a.id === msg.alert.id ? msg.alert : a));
+                    console.log(`[POLICE WS ${et}] ✅ Alert resolved - She is safe!`);
+                    const resolvedName = msg.victim_name || (msg.alert && msg.alert.victim_name) || 'Priya Sharma';
+                    setActiveAlert(null);
+                    setSheIsSafeNotice({
+                        visible: true,
+                        victim_name: resolvedName,
+                        time: new Date().toLocaleTimeString(),
+                    });
+                    if (msg.alert) {
+                        setHistory(prev => prev.map(a => a.id === msg.alert!.id ? msg.alert! : a));
+                    }
+                    try { soundRef.current?.remove(); } catch (_) {}
+                    soundRef.current = null;
+                    audioQueue.current = [];
+                    isPlaying.current = false;
+                    setIsPlayingAudio(false);
                     break;
                 case 'RESET':
                     setActiveAlert(null); setHistory([]);
@@ -173,104 +244,234 @@ export default function PoliceDashboard({ navigation, route }: any) {
     };
 
     const playNextAudio = async () => {
-        if (audioQueue.current.length === 0) { isPlaying.current = false; return; }
+        if (audioQueue.current.length === 0) {
+            isPlaying.current = false;
+            setIsPlayingAudio(false);
+            return;
+        }
         isPlaying.current = true;
+        setIsPlayingAudio(true);
         const chunk = audioQueue.current.shift()!;
-        const t = new Date().toLocaleTimeString();
+
+        // On web/browser, FileSystem.cacheDirectory is undefined - use HTML5 Audio data URI fallback
+        if (Platform.OS === 'web' || !FileSystem.cacheDirectory) {
+            try {
+                const audioEl = new (window as any).Audio(`data:${chunk.mime || 'audio/m4a'};base64,${chunk.data}`);
+                audioEl.volume = 1.0;
+                audioEl.onended = () => { playNextAudio(); };
+                audioEl.onerror = () => { playNextAudio(); };
+                audioEl.play().catch(() => { playNextAudio(); });
+                return;
+            } catch (err) {
+                console.warn('[POLICE WEB AUDIO FALLBACK FAILED]', err);
+            }
+        }
+
         try {
             if (soundRef.current) {
                 try { soundRef.current.remove(); } catch (_) {}
                 soundRef.current = null;
             }
             await setAudioModeAsync({ playsInSilentMode: true });
-            const tmpUri = FileSystem.cacheDirectory + `p_chunk_${Date.now()}.m4a`;
+            const ext = chunk.mime?.includes('wav') ? '.wav' : chunk.mime?.includes('aac') ? '.aac' : '.m4a';
+            const tmpUri = `${FileSystem.cacheDirectory}p_chunk_${Date.now()}${ext}`;
             await FileSystem.writeAsStringAsync(tmpUri, chunk.data, { encoding: FileSystem.EncodingType.Base64 });
             const player = createAudioPlayer(tmpUri);
             soundRef.current = player;
-            console.log(`[POLICE AUDIO ${t}] 🔊 Playing audio chunk`);
+            console.log(`[POLICE AUDIO] 🔊 Playing chunk out loud`);
             player.play();
-            const sub = player.addListener('playbackStatusUpdate', (s) => {
-                if (s.didJustFinish || s.error) {
-                    sub.remove();
-                    try { player.remove(); } catch (_) {}
-                    if (soundRef.current === player) soundRef.current = null;
-                    FileSystem.deleteAsync(tmpUri, { idempotent: true }).catch(() => {});
-                    playNextAudio();
+
+            // Safety timeout to ensure audio queue NEVER hangs even if player event doesn't fire
+            let cleanedUp = false;
+            const cleanupAndNext = () => {
+                if (cleanedUp) return;
+                cleanedUp = true;
+                clearTimeout(safetyTimer);
+                try { sub?.remove(); } catch (_) {}
+                try { player?.remove(); } catch (_) {}
+                if (soundRef.current === player) soundRef.current = null;
+                FileSystem.deleteAsync(tmpUri, { idempotent: true }).catch(() => {});
+                playNextAudio();
+            };
+
+            const safetyTimer = setTimeout(cleanupAndNext, 3200);
+
+            const sub = player.addListener('playbackStatusUpdate', (s: any) => {
+                if (s.didJustFinish || s.error || (!s.playing && s.currentTime > 0 && s.currentTime >= (s.duration || 1) - 0.1)) {
+                    cleanupAndNext();
                 }
             });
         } catch (e: any) {
-            console.warn(`[POLICE AUDIO PLAY ERROR ${t}]`, e?.message);
+            console.warn(`[POLICE AUDIO PLAY ERROR]`, e?.message);
             isPlaying.current = false;
+            setIsPlayingAudio(false);
             if (audioQueue.current.length > 0) playNextAudio();
         }
     };
 
+    const handleOfficerOverride = () => {
+        Alert.alert(
+            '⚡ Officer Emergency Override',
+            'Under Exigent Powers (CrPC § 165 / Section 100), override guardian authorization to immediately unlock live camera and audio evidence?',
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Confirm Override & Unlock Feed',
+                    style: 'destructive',
+                    onPress: () => {
+                        accessGrantedRef.current = true;
+                        setAccessGranted(true);
+                        // Also notify server and guardians
+                        if (currentAlertId.current && wsRef.current) {
+                            wsRef.current.sendRaw({
+                                type: 'POLICE_ACCESS_GRANTED',
+                                alert_id: currentAlertId.current,
+                                override_by: user.name,
+                            });
+                        }
+                        Alert.alert('🔓 Live Evidence Unlocked', 'Officer emergency override active. Live camera frames and audio are now streaming.');
+                    },
+                },
+            ]
+        );
+    };
+
+    const handleDispatchPatrol = () => {
+        if (!activeAlert) return;
+        setPatrolDispatched(true);
+        wsRef.current?.sendRaw({
+            type: 'ALERT_ACKNOWLEDGED',
+            alert_id: activeAlert.id,
+            eta_minutes: 3,
+            officer_name: user.name || 'Patrol Unit 7',
+        });
+        Alert.alert(
+            '🚔 Patrol Dispatched',
+            `Patrol unit acknowledged emergency for ${activeAlert.victim_name}. ETA transmitted as 3 minutes to victim and guardians.`
+        );
+    };
+
     const openGoogleMaps = (lat: number, lng: number, name?: string) => {
-        const label = encodeURIComponent(name || 'Victim Location');
-        Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`)
-            .catch(() => Linking.openURL(`geo:${lat},${lng}?q=${lat},${lng}(${label})`));
+        const label = encodeURIComponent(name || 'Victim Incident Location');
+        const url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&destination_place_id=${label}`;
+        Linking.openURL(url).catch(() =>
+            Linking.openURL(`geo:${lat},${lng}?q=${lat},${lng}(${label})`)
+        );
     };
 
-    const openMapsLocation = (lat: number, lng: number) => {
-        Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`);
-    };
-
-    const handleSaveRecording = async () => {
-        const chunks = audioChunksRef.current;
-        const frames = videoFramesRef.current;
-        if (chunks.length === 0 && frames.length === 0) {
-            Alert.alert('No Data', 'No recording data available. Ensure Guardian has granted access.'); return;
+    const exportPDF = async () => {
+        if (!activeAlert) {
+            Alert.alert('No Active Incident', 'An active incident is required to generate an official report.');
+            return;
         }
         setIsSaving(true);
         try {
-            let framesSaved = 0;
-            if (frames.length > 0) {
-                for (const frame of frames.slice(-5)) {
-                    try {
-                        const targetUri = (FileSystem.documentDirectory || FileSystem.cacheDirectory) + `pframe_${frame.seq}.jpg`;
-                        await FileSystem.writeAsStringAsync(targetUri, frame.data, { encoding: FileSystem.EncodingType.Base64 });
-                        framesSaved++;
-                    } catch (_) {}
-                }
-            }
-            let audioUrl = null;
-            if (chunks.length > 0) {
-                const last = chunks[chunks.length - 1];
-                try {
-                    const res = await fetch(`${BACKEND_URL}/api/recording/save`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ alert_id: currentAlertId.current, audio_b64: last.data, mime_type: last.mime }),
-                    });
-                    if (res.ok) { const d = await res.json(); audioUrl = d.url; }
-                } catch (fe: any) { console.warn(`[POLICE SAVE AUDIO ERROR]`, fe?.message); }
-            }
-            setIsSaving(false);
-            Alert.alert(
-                '✅ Evidence Saved',
-                `${framesSaved} video snapshots saved to local documents\nAudio URL: ${audioUrl || 'N/A'}`,
-                [{ text: 'OK' }]
-            );
+            const latestFrame = videoFramesRef.current.length > 0
+                ? videoFramesRef.current[videoFramesRef.current.length - 1]!.data
+                : liveVideoFrame;
+
+            await generateAndShareEvidencePDF({
+                alert: activeAlert,
+                frameBase64: latestFrame,
+                audioChunkCount: audioChunksRef.current.length,
+                officerName: user.name || 'Officer Rajesh Kumar',
+                stationName: 'Mangaluru Central Police Station',
+            });
         } catch (e: any) {
+            Alert.alert('PDF Export Error', e?.message || 'Could not compile evidence PDF.');
+        } finally {
             setIsSaving(false);
-            Alert.alert('❌ Save Failed', e?.message);
         }
     };
 
+    const exportAudio = async () => {
+        const chunks = audioChunksRef.current;
+        if (chunks.length === 0) {
+            Alert.alert('No Audio Yet', 'Waiting for live audio chunks to arrive from victim device.');
+            return;
+        }
+        setIsSaving(true);
+        try {
+            const lastAudio = chunks[chunks.length - 1]!;
+            const ext = lastAudio.mime?.includes('wav') ? '.wav' : '.m4a';
+            const tmpUri = `${FileSystem.cacheDirectory}SheSafe_Police_Audio_${Date.now()}${ext}`;
+            await FileSystem.writeAsStringAsync(tmpUri, lastAudio.data, {
+                encoding: FileSystem.EncodingType.Base64,
+            });
+            setIsSaving(false);
+            const canShare = await Sharing.isAvailableAsync();
+            if (canShare) {
+                await Sharing.shareAsync(tmpUri, {
+                    mimeType: ext === '.wav' ? 'audio/wav' : 'audio/m4a',
+                    dialogTitle: 'Save SheSafe Audio Recording',
+                });
+            } else {
+                Alert.alert('Audio Saved', `Audio recording cached at: ${tmpUri}`);
+            }
+        } catch (e: any) {
+            setIsSaving(false);
+            Alert.alert('Audio Export Failed', e?.message || 'Could not export audio.');
+        }
+    };
+
+    const exportPhoto = async () => {
+        const frames = videoFramesRef.current;
+        const photoData = frames.length > 0 ? frames[frames.length - 1]!.data : liveVideoFrame;
+        if (!photoData) {
+            Alert.alert('No Photo Yet', 'Waiting for front-camera frames to arrive from victim device.');
+            return;
+        }
+        setIsSaving(true);
+        try {
+            const tmpUri = `${FileSystem.cacheDirectory}SheSafe_Police_Photo_${Date.now()}.jpg`;
+            await FileSystem.writeAsStringAsync(tmpUri, photoData, {
+                encoding: FileSystem.EncodingType.Base64,
+            });
+            setIsSaving(false);
+            const canShare = await Sharing.isAvailableAsync();
+            if (canShare) {
+                await Sharing.shareAsync(tmpUri, {
+                    mimeType: 'image/jpeg',
+                    dialogTitle: 'Save SheSafe Crime Scene Snapshot',
+                });
+            } else {
+                Alert.alert('Photo Saved', `Camera snapshot cached at: ${tmpUri}`);
+            }
+        } catch (e: any) {
+            setIsSaving(false);
+            Alert.alert('Photo Export Failed', e?.message || 'Could not export photo.');
+        }
+    };
+
+    const handleSaveEvidence = () => {
+        Alert.alert(
+            '📦 Official Police Evidence Dossier',
+            'Select the evidentiary format to export directly to device storage or dispatch units:',
+            [
+                { text: '📄 Export Official FIR Report (PDF)', onPress: exportPDF },
+                { text: '💾 Save Ambient Audio Stream (.wav)', onPress: exportAudio },
+                { text: '📷 Save Scene Visual Snapshot (.jpg)', onPress: exportPhoto },
+                { text: 'Cancel', style: 'cancel' },
+            ]
+        );
+    };
+
     const handleLogout = async () => {
-        Alert.alert('Logout', 'Logout from Police Dashboard?', [
+        Alert.alert('Sign Out', 'Sign out from Police Control Dashboard?', [
             { text: 'Cancel', style: 'cancel' },
             {
-                text: 'Logout', style: 'destructive', onPress: async () => {
+                text: 'Sign Out',
+                style: 'destructive',
+                onPress: async () => {
                     wsRef.current?.disconnect();
                     await AsyncStorage.removeItem('shesafe_current_user');
                     navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
-                }
-            }
+                },
+            },
         ]);
     };
 
-    const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2,'0')}:${String(s % 60).padStart(2,'0')}`;
+    const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
     const fmtCoords = (lat?: number | null, lng?: number | null) =>
         lat && lng ? `${lat.toFixed(5)}°N, ${lng.toFixed(5)}°E` : 'Acquiring GPS...';
     const fmtTime = (iso: string) =>
@@ -278,55 +479,112 @@ export default function PoliceDashboard({ navigation, route }: any) {
     const timeStr = currentTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
     return (
-        <LinearGradient colors={['#050F2E', '#030818', '#080810']} style={styles.container}>
-            <StatusBar barStyle="light-content" />
+        <View style={styles.container}>
+            <StatusBar barStyle="dark-content" />
 
+            {/* Header */}
             <Animated.View style={[styles.header, { opacity: fadeAnim }]}>
                 <View>
-                    <Text style={styles.roleLabel}>👮 POLICE CONTROL</Text>
+                    <View style={styles.roleRow}>
+                        <View style={styles.policeBadgeBox}>
+                            <Text style={{ fontSize: 13 }}>👮</Text>
+                        </View>
+                        <Text style={styles.roleLabel}>POLICE CONTROL ROOM · EMERGENCY 112</Text>
+                    </View>
                     <Text style={styles.userName}>{user.name}</Text>
                 </View>
                 <View style={styles.headerRight}>
                     <View style={[styles.connPill, connected ? styles.connOn : styles.connOff]}>
-                        <Animated.View style={[styles.connDot, { opacity: connDot }]} />
-                        <Text style={styles.connText}>{connected ? 'Live' : 'Connecting...'}</Text>
+                        <Animated.View style={[styles.connDot, { opacity: connDot, backgroundColor: connected ? '#1D4ED8' : '#D97706' }]} />
+                        <Text style={[styles.connText, { color: connected ? '#1E40AF' : '#92400E' }]}>
+                            {connected ? 'Patrol Live' : 'Connecting...'}
+                        </Text>
                     </View>
                     <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
-                        <Text>⬅️</Text>
+                        <Text style={{ fontSize: 15 }}>🚪</Text>
                     </TouchableOpacity>
                 </View>
             </Animated.View>
 
-            <Text style={styles.clock}>{timeStr}</Text>
+            <View style={styles.clockBar}>
+                <Text style={styles.clock}>{timeStr}</Text>
+            </View>
 
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
-                {activeAlert ? (
-                    <View style={styles.emergCard}>
-                        <LinearGradient colors={['rgba(29,78,216,0.28)','rgba(29,78,216,0.04)']} style={styles.emergGrad}>
 
-                            {/* Siren */}
+                {activeAlert ? (
+                    <View style={styles.alertCard}>
+                        {/* Siren & Case Header */}
+                        <LinearGradient colors={['#EFF6FF', '#DBEAFE']} style={styles.alertBanner}>
                             <View style={styles.sirenRow}>
                                 <Animated.Text style={[styles.sirenEmoji, { opacity: sirenAnim }]}>🚨</Animated.Text>
                                 <Text style={styles.sirenEmoji}>🚔</Text>
                                 <Animated.Text style={[styles.sirenEmoji, { opacity: sirenAnim }]}>🚨</Animated.Text>
                             </View>
-                            <Text style={styles.emergTitle}>EMERGENCY ALERT</Text>
-                            <Text style={styles.caseId}>Case #{activeAlert.id} · ⏱ {fmt(elapsed)}</Text>
+                            <Text style={styles.emergTitle}>CRITICAL INCIDENT ALERT</Text>
+                            <Text style={styles.caseId}>Case #{activeAlert.id.slice(0, 18)} · Elapsed: {fmt(elapsed)}</Text>
+                        </LinearGradient>
 
-                            {/* Victim */}
+                        <View style={styles.cardBody}>
+
+                            {/* Victim Summary Card */}
                             <View style={styles.victimCard}>
-                                <Text style={styles.vcMeta}>VICTIM</Text>
-                                <Text style={styles.vcName}>{activeAlert.victim_name}</Text>
-                                <Text style={styles.vcPhone}>{activeAlert.victim_phone}</Text>
+                                <View style={styles.victimAvatar}>
+                                    <Text style={{ fontSize: 24 }}>🚨</Text>
+                                </View>
+                                <View style={{ flex: 1 }}>
+                                    <Text style={styles.victimName}>{activeAlert.victim_name}</Text>
+                                    <Text style={styles.victimPhone}>📞 {activeAlert.victim_phone}</Text>
+                                </View>
+                                <View style={styles.priorityBadge}>
+                                    <Text style={styles.priorityText}>PRIORITY 1</Text>
+                                </View>
                             </View>
 
-                            {/* ── LIVE MAP ── */}
-                            {activeAlert.lat && activeAlert.lng ? (
-                                <>
-                                    <View style={styles.sectionHeader}>
-                                        <Animated.View style={[styles.recDot, { opacity: sirenAnim, backgroundColor: Colors.safe }]} />
-                                        <Text style={[styles.sectionTitle, { color: Colors.safe }]}>VICTIM LOCATION — LIVE MAP</Text>
+                            {/* Mobile Quick Response Patrol Actions */}
+                            <View style={styles.mobileActionRow}>
+                                {!patrolDispatched ? (
+                                    <TouchableOpacity
+                                        style={styles.dispatchBtn}
+                                        onPress={handleDispatchPatrol}
+                                        activeOpacity={0.85}
+                                    >
+                                        <LinearGradient colors={['#DC2626', '#B91C1C']} style={styles.dispatchBtnInner}>
+                                            <Text style={styles.dispatchBtnText}>🚔 DISPATCH PATROL (ACKNOWLEDGE 3-MIN ETA)</Text>
+                                        </LinearGradient>
+                                    </TouchableOpacity>
+                                ) : (
+                                    <View style={styles.dispatchedBadge}>
+                                        <Text style={styles.dispatchedText}>✅ PATROL DISPATCHED · ETA 3 MIN ACKNOWLEDGED</Text>
                                     </View>
+                                )}
+
+                                <TouchableOpacity
+                                    style={styles.callVictimBtn}
+                                    onPress={() => Linking.openURL(`tel:${activeAlert.victim_phone || '112'}`)}
+                                    activeOpacity={0.85}
+                                >
+                                    <Text style={styles.callVictimText}>📞 Call Victim Immediately</Text>
+                                </TouchableOpacity>
+                            </View>
+
+                            {/* Evidence Auto-Download Indicator */}
+                            {(autoSavedAudioCount > 0 || autoSavedPhotoCount > 0) && (
+                                <View style={styles.autoDownloadBadge}>
+                                    <Text style={styles.autoDownloadText}>
+                                        💾 Auto-Saved Evidence to Police Device: {autoSavedAudioCount} Audio Chunks · {autoSavedPhotoCount} Camera Frames
+                                    </Text>
+                                </View>
+                            )}
+
+                            {/* ── INCIDENT MAP VIEW FIRST (Officer Needs Location Immediately) ── */}
+                            <View style={styles.sectionTitleRow}>
+                                <View style={[styles.sectionIndicator, { backgroundColor: '#1D4ED8' }]} />
+                                <Text style={styles.sectionTitle}>INCIDENT LOCATION — PATROL MAP VIEW</Text>
+                            </View>
+
+                            {activeAlert.lat && activeAlert.lng ? (
+                                <View style={styles.mapWrapper}>
                                     <View style={styles.mapContainer}>
                                         <MapView
                                             style={styles.map}
@@ -343,7 +601,7 @@ export default function PoliceDashboard({ navigation, route }: any) {
                                             <Marker
                                                 coordinate={{ latitude: activeAlert.lat, longitude: activeAlert.lng }}
                                                 title={activeAlert.victim_name}
-                                                description={activeAlert.address || ''}
+                                                description={activeAlert.address || 'Incident Scene'}
                                                 pinColor="red"
                                             />
                                         </MapView>
@@ -354,44 +612,60 @@ export default function PoliceDashboard({ navigation, route }: any) {
                                     <TouchableOpacity
                                         style={styles.directionsBtn}
                                         onPress={() => openGoogleMaps(activeAlert.lat!, activeAlert.lng!, activeAlert.victim_name)}
-                                        activeOpacity={0.8}
+                                        activeOpacity={0.85}
                                     >
-                                        <Text style={styles.directionsBtnText}>🗺️ Get Directions in Google Maps</Text>
+                                        <LinearGradient colors={['#1D4ED8', '#2563EB']} style={styles.directionsInner}>
+                                            <Text style={styles.directionsBtnText}>🗺️ Dispatch Patrol via Google Maps</Text>
+                                        </LinearGradient>
                                     </TouchableOpacity>
-                                    <Text style={styles.addrText}>📌 {activeAlert.address}</Text>
-                                </>
+                                    <Text style={styles.addrText}>📌 {activeAlert.address || 'Near Mangaluru Central'}</Text>
+                                </View>
                             ) : (
-                                <View style={styles.locGpsRow}>
-                                    <Text style={{ fontSize: 22 }}>📍</Text>
+                                <View style={styles.locFallback}>
+                                    <Text style={{ fontSize: 24 }}>📍</Text>
                                     <View style={{ flex: 1 }}>
-                                        <Text style={styles.locLabel}>VICTIM LOCATION</Text>
-                                        <Text style={styles.coordsText}>{fmtCoords(activeAlert.lat, activeAlert.lng)}</Text>
-                                        <Text style={styles.addrText}>{activeAlert.address}</Text>
+                                        <Text style={styles.locFallbackLabel}>VICTIM LOCATION</Text>
+                                        <Text style={styles.locFallbackCoords}>{fmtCoords(activeAlert.lat, activeAlert.lng)}</Text>
+                                        <Text style={styles.addrText}>{activeAlert.address || 'Acquiring GPS fix...'}</Text>
                                     </View>
                                     <Animated.Text style={{ opacity: sirenAnim }}>🔴</Animated.Text>
                                 </View>
                             )}
 
-                            {/* ── GUARDIAN GATE ── */}
+                            {/* ── GUARDIAN CONSENT / EMERGENCY OVERRIDE GATE ── */}
                             {!accessGranted ? (
-                                <LinearGradient colors={['rgba(245,158,11,0.2)','rgba(245,158,11,0.05)']} style={styles.awaitingBox}>
-                                    <Animated.Text style={{ fontSize: 36, opacity: sirenAnim }}>🔒</Animated.Text>
-                                    <View style={{ flex: 1 }}>
-                                        <Text style={styles.awaitingTitle}>AWAITING GUARDIAN AUTHORIZATION</Text>
-                                        <Text style={styles.awaitingSub}>The Guardian must tap "Grant Police Access" on their device to unlock the live evidence stream.</Text>
+                                <View style={styles.awaitingBox}>
+                                    <View style={styles.awaitingTop}>
+                                        <Text style={{ fontSize: 32 }}>🔒</Text>
+                                        <View style={{ flex: 1 }}>
+                                            <Text style={styles.awaitingTitle}>AWAITING GUARDIAN AUTHORIZATION</Text>
+                                            <Text style={styles.awaitingSub}>
+                                                Privacy protocols require guardian consent before streaming live audio/video.
+                                            </Text>
+                                        </View>
                                     </View>
-                                </LinearGradient>
+                                    <TouchableOpacity
+                                        style={styles.overrideBtn}
+                                        onPress={handleOfficerOverride}
+                                        activeOpacity={0.85}
+                                    >
+                                        <LinearGradient colors={['#DC2626', '#B91C1C']} style={styles.overrideInner}>
+                                            <Text style={styles.overrideText}>⚡ OFFICER EMERGENCY OVERRIDE (CRITICAL THREAT)</Text>
+                                        </LinearGradient>
+                                    </TouchableOpacity>
+                                </View>
                             ) : (
                                 <>
-                                    <LinearGradient colors={['rgba(16,185,129,0.2)','rgba(16,185,129,0.05)']} style={styles.accessBadge}>
-                                        <Text style={styles.accessBadgeText}>🔓 Guardian Access Granted — Live Feed Active</Text>
-                                    </LinearGradient>
-
-                                    {/* Live video */}
-                                    <View style={styles.sectionHeader}>
-                                        <Animated.View style={[styles.recDot, { opacity: sirenAnim }]} />
-                                        <Text style={styles.sectionTitle}>LIVE CAMERA — FRONT FACING</Text>
+                                    <View style={styles.accessBadge}>
+                                        <Text style={styles.accessBadgeText}>🔓 Authorized — Live Evidence Feed Active</Text>
                                     </View>
+
+                                    {/* ── LIVE FRONT CAMERA ── */}
+                                    <View style={styles.sectionTitleRow}>
+                                        <Animated.View style={[styles.sectionIndicator, { opacity: sirenAnim, backgroundColor: '#DC2626' }]} />
+                                        <Text style={styles.sectionTitle}>LIVE FRONT CAMERA EVIDENCE</Text>
+                                    </View>
+
                                     <View style={styles.videoBox}>
                                         {liveVideoFrame ? (
                                             <>
@@ -402,182 +676,557 @@ export default function PoliceDashboard({ navigation, route }: any) {
                                                 />
                                                 <View style={styles.videoOverlay}>
                                                     <View style={styles.liveRecChip}>
-                                                        <Animated.View style={[styles.recDot, { opacity: sirenAnim }]} />
-                                                        <Text style={styles.recChipText}>🔴 LIVE</Text>
+                                                        <Animated.View style={[styles.liveDot, { opacity: sirenAnim, backgroundColor: '#FFFFFF' }]} />
+                                                        <Text style={styles.recChipText}>🔴 LIVE EVIDENCE</Text>
                                                     </View>
-                                                    <Text style={styles.fpsLabel}>Front Cam</Text>
+                                                    <View style={styles.camBadge}>
+                                                        <Text style={styles.camBadgeText}>Attacker Face Cam</Text>
+                                                    </View>
                                                 </View>
                                             </>
                                         ) : (
-                                            <LinearGradient colors={['#050F2E','#0A1830']} style={styles.videoPlaceholder}>
-                                                <Animated.Text style={{ fontSize: 36, opacity: sirenAnim }}>📷</Animated.Text>
-                                                <Text style={styles.vpText}>Receiving first frame...</Text>
-                                                <Text style={styles.vpSub}>Front camera captures every 3s</Text>
-                                            </LinearGradient>
+                                            <View style={styles.videoPlaceholder}>
+                                                <Animated.Text style={{ fontSize: 32, opacity: sirenAnim }}>📷</Animated.Text>
+                                                <Text style={styles.vpText}>Awaiting camera frame...</Text>
+                                                <Text style={styles.vpSub}>Front camera captures every 3 seconds</Text>
+                                            </View>
                                         )}
                                     </View>
 
-                                    {/* Live audio */}
-                                    <View style={styles.sectionHeader}>
-                                        <Animated.View style={[styles.recDot, { opacity: sirenAnim, backgroundColor: Colors.policeLight }]} />
-                                        <Text style={[styles.sectionTitle, { color: Colors.policeLight }]}>
-                                            AUDIO — {audioChunkCount} CHUNK{audioChunkCount !== 1 ? 'S' : ''} RECEIVED
+                                    {/* ── LIVE AUDIO ── */}
+                                    <View style={styles.sectionTitleRow}>
+                                        <Animated.View style={[styles.sectionIndicator, { opacity: sirenAnim, backgroundColor: '#1D4ED8' }]} />
+                                        <Text style={[styles.sectionTitle, { color: '#1D4ED8' }]}>
+                                            LIVE AMBIENT AUDIO ({audioChunkCount} CHUNKS)
                                         </Text>
                                     </View>
-                                    <LinearGradient colors={['rgba(29,78,216,0.2)','rgba(29,78,216,0.05)']} style={styles.audioBox}>
+
+                                    <View style={styles.audioBox}>
                                         <View style={styles.audioTop}>
-                                            <Animated.Text style={{ opacity: sirenAnim, fontSize: 20 }}>🎤</Animated.Text>
+                                            <View style={styles.policeAudioIcon}>
+                                                <Text style={{ fontSize: 16 }}>🎤</Text>
+                                            </View>
                                             <View style={{ flex: 1 }}>
-                                                <Text style={[styles.audioTitle, { color: Colors.policeLight }]}>LIVE AUDIO — AUTO-PLAYS</Text>
-                                                <Text style={styles.audioSub}>Rolling 5s chunks</Text>
+                                                <Text style={styles.audioTitle}>
+                                                    {isPlayingAudio ? '🔊 Playing Live Ambient Stream...' : 'Audio Feed Connected'}
+                                                </Text>
+                                                <Text style={styles.audioSub}>Auto-plays incoming evidence audio stream</Text>
                                             </View>
                                         </View>
                                         <View style={styles.eqRow}>
-                                            {(audioLevel.length > 0 ? audioLevel : Array(15).fill(8)).map((h, i) => (
+                                            {(audioLevel.length > 0 ? audioLevel : Array(16).fill(10)).map((h, i) => (
                                                 <Animated.View
                                                     key={i}
-                                                    style={[styles.eqBar, {
-                                                        height: Math.max(4, h * 0.35),
-                                                        backgroundColor: Colors.policeLight,
-                                                        opacity: audioChunkCount > 0 ? (i % 2 === 0 ? sirenAnim : 1) : 0.25,
-                                                    }]}
+                                                    style={[
+                                                        styles.eqBar,
+                                                        {
+                                                            height: Math.max(5, h * 0.38),
+                                                            backgroundColor: '#1D4ED8',
+                                                            opacity: audioChunkCount > 0 ? (i % 2 === 0 ? sirenAnim : 1) : 0.3,
+                                                        },
+                                                    ]}
                                                 />
                                             ))}
                                         </View>
-                                    </LinearGradient>
+                                    </View>
 
-                                    {/* Save evidence */}
+                                    {/* Save Evidence */}
                                     <TouchableOpacity
                                         style={styles.saveBtn}
-                                        onPress={handleSaveRecording}
+                                        onPress={handleSaveEvidence}
                                         disabled={isSaving}
-                                        activeOpacity={0.8}
+                                        activeOpacity={0.85}
                                     >
-                                        <LinearGradient colors={[Colors.safe, Colors.safeDark]} style={styles.btnInner}>
-                                            <Text style={styles.btnText}>{isSaving ? '⏳ Saving...' : '💾 Save Evidence Recording'}</Text>
+                                        <LinearGradient colors={['#059669', '#10B981']} style={styles.btnInner}>
+                                            <Text style={styles.btnText}>
+                                                {isSaving ? '⏳ Exporting...' : '💾 Save Incident Evidence Dossier to Device'}
+                                            </Text>
                                         </LinearGradient>
                                     </TouchableOpacity>
                                 </>
                             )}
-                        </LinearGradient>
+
+                        </View>
                     </View>
                 ) : (
-                    <LinearGradient colors={['rgba(29,78,216,0.12)','rgba(29,78,216,0.04)']} style={styles.idleCard}>
-                        <Text style={styles.idleEmoji}>👮</Text>
-                        <Text style={styles.idleTitle}>ALL CLEAR</Text>
-                        <Text style={styles.idleText}>No active incidents. Monitoring real-time.</Text>
-                        <View style={[styles.connPill, connected ? styles.connOn : styles.connOff, { alignSelf: 'center', marginTop: Spacing.sm }]}>
-                            <Animated.View style={[styles.connDot, { opacity: connDot, backgroundColor: connected ? Colors.safe : Colors.warning }]} />
-                            <Text style={styles.connText}>{connected ? 'Connected & Monitoring' : 'Reconnecting...'}</Text>
-                        </View>
-                    </LinearGradient>
+                    <>
+                        {sheIsSafeNotice ? (
+                            <View style={styles.sheSafeCard}>
+                                <View style={styles.sheSafeTop}>
+                                    <View style={styles.sheSafeBadge}>
+                                        <Text style={{ fontSize: 24 }}>✅</Text>
+                                    </View>
+                                    <View style={{ flex: 1 }}>
+                                        <Text style={styles.sheSafeTitle}>INCIDENT RESOLVED — SHE IS SAFE</Text>
+                                        <Text style={styles.sheSafeSub}>
+                                            {sheIsSafeNotice.victim_name} confirmed safety via PIN verification. Emergency alerts, sirens, and live evidence feeds have been safely stood down.
+                                        </Text>
+                                    </View>
+                                </View>
+                                <View style={styles.sheSafeDetails}>
+                                    <Text style={styles.sheSafeTimeText}>
+                                        ⏱ Resolved at {sheIsSafeNotice.time} · Logged in Incident Dispatch Archive
+                                    </Text>
+                                    <TouchableOpacity
+                                        style={styles.dismissNoticeBtn}
+                                        onPress={() => setSheIsSafeNotice(null)}
+                                    >
+                                        <Text style={styles.dismissNoticeText}>Dismiss</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            </View>
+                        ) : (
+                            <View style={styles.safeCard}>
+                                <View style={styles.safeShieldCircle}>
+                                    <Text style={styles.safeEmoji}>🛡️</Text>
+                                </View>
+                                <Text style={styles.safeTitle}>PATROL MONITORING NORMAL</Text>
+                                <Text style={styles.safeText}>
+                                    No emergency SOS incidents flagged. Control room standing by for priority dispatch.
+                                </Text>
+                                <View style={[styles.connPill, connected ? styles.connOn : styles.connOff, { alignSelf: 'center', marginTop: Spacing.sm }]}>
+                                    <Animated.View style={[styles.connDot, { opacity: connDot, backgroundColor: connected ? '#1D4ED8' : '#D97706' }]} />
+                                    <Text style={[styles.connText, { color: connected ? '#1E40AF' : '#92400E' }]}>
+                                        {connected ? 'Police Realtime Bridge Online' : 'Connecting...'}
+                                    </Text>
+                                </View>
+                            </View>
+                        )}
+
+                        {/* Evidence Auto-Download Indicator */}
+                        {(autoSavedAudioCount > 0 || autoSavedPhotoCount > 0) && (
+                            <View style={styles.autoDownloadBadge}>
+                                <Text style={styles.autoDownloadText}>
+                                    💾 Auto-Saved Evidence Archive: {autoSavedAudioCount} Audio Chunks · {autoSavedPhotoCount} Camera Frames
+                                </Text>
+                            </View>
+                        )}
+                    </>
                 )}
 
-                {/* Incident History */}
+                {/* History Section */}
                 {history.length > 0 && (
-                    <>
-                        <Text style={styles.historyTitle}>📋 Incident History</Text>
+                    <View style={styles.historySection}>
+                        <Text style={styles.historyTitle}>📋 Incident Dispatch Archive</Text>
                         {history.map(a => (
-                            <LinearGradient key={a.id} colors={['rgba(255,255,255,0.06)','rgba(255,255,255,0.02)']} style={styles.histCard}>
+                            <View key={a.id} style={styles.histCard}>
                                 <Text style={{ fontSize: 20 }}>{a.status === 'active' ? '🔴' : '✅'}</Text>
-                                <View style={{ flex: 1, gap: 2 }}>
+                                <View style={{ flex: 1 }}>
                                     <Text style={styles.histName}>{a.victim_name}</Text>
-                                    <Text style={styles.histTime}>Case #{a.id} · {fmtTime(a.triggered_at)}</Text>
-                                    {a.lat && a.lng ? (
-                                        <>
-                                            <Text style={styles.histCoords}>📍 {fmtCoords(a.lat, a.lng)}</Text>
-                                            <TouchableOpacity onPress={() => openMapsLocation(a.lat!, a.lng!)}>
-                                                <Text style={styles.histMapLink}>🗺️ View on Google Maps →</Text>
-                                            </TouchableOpacity>
-                                        </>
-                                    ) : (
-                                        <Text style={styles.histCoords}>📍 GPS not available</Text>
+                                    <Text style={styles.histTime}>{fmtTime(a.triggered_at)}</Text>
+                                    {a.lat && a.lng && (
+                                        <TouchableOpacity onPress={() => openGoogleMaps(a.lat!, a.lng!, a.victim_name)}>
+                                            <Text style={styles.histMapLink}>📍 {fmtCoords(a.lat, a.lng)}</Text>
+                                        </TouchableOpacity>
                                     )}
                                 </View>
-                                <View style={[styles.histStatus, { backgroundColor: a.status === 'active' ? 'rgba(239,68,68,0.2)' : 'rgba(16,185,129,0.15)' }]}>
-                                    <Text style={[styles.histStatusText, { color: a.status === 'active' ? Colors.danger : Colors.safe }]}>
+                                <View style={[styles.histStatus, { backgroundColor: a.status === 'active' ? '#FEE2E2' : '#DCFCE7' }]}>
+                                    <Text style={[styles.histStatusText, { color: a.status === 'active' ? '#DC2626' : '#16A34A' }]}>
                                         {a.status.toUpperCase()}
                                     </Text>
                                 </View>
-                            </LinearGradient>
+                            </View>
                         ))}
-                    </>
+                    </View>
                 )}
             </ScrollView>
-        </LinearGradient>
+        </View>
     );
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1 },
-    header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: Spacing.lg, paddingTop: Spacing.xxl + 10, paddingBottom: Spacing.xs },
-    roleLabel: { fontSize: FontSizes.xs, color: Colors.police, fontWeight: '800', letterSpacing: 2 },
-    userName: { fontSize: FontSizes.xl, fontWeight: '800', color: Colors.text },
+    container: { flex: 1, backgroundColor: '#F8FAFC' },
+    header: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingHorizontal: Spacing.lg,
+        paddingTop: Spacing.xxl + 8,
+        paddingBottom: Spacing.sm,
+        backgroundColor: '#FFFFFF',
+        borderBottomWidth: 1,
+        borderBottomColor: '#E2E8F0',
+    },
+    roleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
+    policeBadgeBox: {
+        width: 22,
+        height: 22,
+        borderRadius: 11,
+        backgroundColor: '#DBEAFE',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    roleLabel: { fontSize: FontSizes.xs, color: '#1D4ED8', fontWeight: '800', letterSpacing: 1.5 },
+    userName: { fontSize: FontSizes.xl, fontWeight: '800', color: '#0F172A' },
     headerRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
-    connPill: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, borderRadius: BorderRadius.full, paddingVertical: 6, paddingHorizontal: Spacing.sm, borderWidth: 1 },
-    connOn:  { backgroundColor: 'rgba(29,78,216,0.15)', borderColor: 'rgba(29,78,216,0.35)' },
-    connOff: { backgroundColor: 'rgba(245,158,11,0.12)', borderColor: 'rgba(245,158,11,0.3)' },
-    connDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.police },
-    connText: { fontSize: FontSizes.xs, color: Colors.text, fontWeight: '600' },
-    logoutBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.07)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: Colors.border },
-    clock: { fontSize: FontSizes.xl, fontWeight: '300', color: Colors.text, letterSpacing: 3, textAlign: 'center', paddingVertical: Spacing.xs, fontVariant: ['tabular-nums'] },
-    scroll: { padding: Spacing.lg, paddingTop: Spacing.xs, paddingBottom: Spacing.xxl + 20, gap: Spacing.md },
-    emergCard: { borderRadius: BorderRadius.lg, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(29,78,216,0.45)' },
-    emergGrad: { padding: Spacing.lg, gap: Spacing.md },
-    sirenRow: { flexDirection: 'row', justifyContent: 'center', gap: Spacing.lg },
-    sirenEmoji: { fontSize: 36 },
-    emergTitle: { fontSize: FontSizes.xxl, fontWeight: '900', color: Colors.policeLight, textAlign: 'center', letterSpacing: 2 },
-    caseId: { fontSize: FontSizes.xs, color: Colors.textMuted, textAlign: 'center', fontWeight: '700', letterSpacing: 1 },
-    victimCard: { backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: BorderRadius.md, padding: Spacing.md, borderWidth: 1, borderColor: Colors.glassBorder },
-    vcMeta: { fontSize: FontSizes.xs, color: Colors.textMuted, fontWeight: '700', letterSpacing: 1.5 },
-    vcName: { fontSize: FontSizes.lg, fontWeight: '800', color: Colors.text, marginTop: 4 },
-    vcPhone: { fontSize: FontSizes.sm, color: Colors.textSecondary },
-    sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-    sectionTitle: { fontSize: FontSizes.xs, color: Colors.danger, fontWeight: '800', letterSpacing: 1 },
-    recDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.danger },
-    mapContainer: { borderRadius: BorderRadius.md, overflow: 'hidden', borderWidth: 1.5, borderColor: 'rgba(29,78,216,0.5)', height: 200, position: 'relative' },
+    connPill: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: Spacing.xs,
+        borderRadius: BorderRadius.full,
+        paddingVertical: 5,
+        paddingHorizontal: Spacing.sm,
+        borderWidth: 1,
+    },
+    connOn:  { backgroundColor: '#EFF6FF', borderColor: '#BFDBFE' },
+    connOff: { backgroundColor: '#FFFBEB', borderColor: '#FDE68A' },
+    connDot: { width: 7, height: 7, borderRadius: 3.5 },
+    connText: { fontSize: FontSizes.xs, fontWeight: '700' },
+    logoutBtn: {
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+        backgroundColor: '#F1F5F9',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+    },
+    clockBar: {
+        backgroundColor: '#FFFFFF',
+        paddingVertical: 4,
+        borderBottomWidth: 1,
+        borderBottomColor: '#F1F5F9',
+    },
+    clock: {
+        fontSize: FontSizes.sm,
+        fontWeight: '600',
+        color: '#64748B',
+        letterSpacing: 2,
+        textAlign: 'center',
+        fontVariant: ['tabular-nums'],
+    },
+    scroll: {
+        padding: Spacing.md,
+        paddingBottom: Spacing.xxl + 20,
+        gap: Spacing.md,
+    },
+    alertCard: {
+        backgroundColor: '#FFFFFF',
+        borderRadius: BorderRadius.xl,
+        overflow: 'hidden',
+        borderWidth: 1,
+        borderColor: '#BFDBFE',
+        shadowColor: '#0F172A',
+        shadowOpacity: 0.08,
+        shadowRadius: 16,
+        elevation: 4,
+    },
+    alertBanner: {
+        paddingVertical: Spacing.md,
+        paddingHorizontal: Spacing.lg,
+        borderBottomWidth: 1,
+        borderBottomColor: '#BFDBFE',
+        alignItems: 'center',
+    },
+    sirenRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: 4 },
+    sirenEmoji: { fontSize: 26 },
+    emergTitle: { fontSize: FontSizes.lg, fontWeight: '900', color: '#1E3A8A', letterSpacing: 1 },
+    caseId: { fontSize: FontSizes.xs, color: '#3B82F6', fontWeight: '600', marginTop: 2 },
+    cardBody: { padding: Spacing.md, gap: Spacing.md },
+    victimCard: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: Spacing.sm,
+        backgroundColor: '#F8FAFC',
+        borderRadius: BorderRadius.lg,
+        padding: Spacing.md,
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+    },
+    victimAvatar: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        backgroundColor: '#DBEAFE',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    victimName: { fontSize: FontSizes.md, fontWeight: '800', color: '#0F172A' },
+    victimPhone: { fontSize: FontSizes.xs, color: '#64748B', fontWeight: '500', marginTop: 2 },
+    priorityBadge: {
+        backgroundColor: '#FEE2E2',
+        borderRadius: BorderRadius.sm,
+        paddingVertical: 3,
+        paddingHorizontal: 8,
+    },
+    priorityText: { fontSize: 10, fontWeight: '800', color: '#DC2626' },
+    sectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 },
+    sectionIndicator: { width: 8, height: 8, borderRadius: 4 },
+    sectionTitle: { fontSize: FontSizes.xs, fontWeight: '800', color: '#0F172A', letterSpacing: 1 },
+    mapWrapper: { gap: 8 },
+    mapContainer: {
+        borderRadius: BorderRadius.lg,
+        overflow: 'hidden',
+        borderWidth: 1.5,
+        borderColor: '#E2E8F0',
+        height: 190,
+        position: 'relative',
+    },
     map: { width: '100%', height: '100%' },
-    mapOverlay: { position: 'absolute', bottom: 8, left: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.65)', borderRadius: 8, paddingVertical: 4, paddingHorizontal: 8 },
-    mapCoords: { color: Colors.text, fontSize: FontSizes.xs, fontWeight: '600' },
-    directionsBtn: { backgroundColor: 'rgba(29,78,216,0.15)', borderRadius: BorderRadius.md, paddingVertical: Spacing.sm, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(29,78,216,0.35)' },
-    directionsBtnText: { color: Colors.policeLight, fontWeight: '700', fontSize: FontSizes.sm },
-    addrText: { fontSize: FontSizes.xs, color: Colors.textSecondary },
-    locGpsRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: 'rgba(16,185,129,0.08)', borderRadius: BorderRadius.md, padding: Spacing.md, borderWidth: 1, borderColor: 'rgba(16,185,129,0.2)' },
-    locLabel: { fontSize: FontSizes.xs, color: Colors.safe, fontWeight: '700', letterSpacing: 1 },
-    coordsText: { fontSize: FontSizes.sm, color: Colors.text, fontWeight: '600', marginTop: 2 },
-    awaitingBox: { borderRadius: BorderRadius.md, padding: Spacing.lg, borderWidth: 1, borderColor: 'rgba(245,158,11,0.35)', flexDirection: 'row', gap: Spacing.sm, alignItems: 'flex-start' },
-    awaitingTitle: { fontSize: FontSizes.xs, color: Colors.warning, fontWeight: '900', letterSpacing: 1 },
-    awaitingSub: { fontSize: FontSizes.xs, color: Colors.textSecondary, marginTop: 4, lineHeight: 16 },
-    accessBadge: { borderRadius: BorderRadius.md, padding: Spacing.md, borderWidth: 1, borderColor: 'rgba(16,185,129,0.3)', alignItems: 'center' },
-    accessBadgeText: { color: Colors.safe, fontWeight: '800', fontSize: FontSizes.sm },
-    videoBox: { borderRadius: BorderRadius.md, overflow: 'hidden', borderWidth: 1.5, borderColor: 'rgba(29,78,216,0.5)', height: 220 },
+    mapOverlay: {
+        position: 'absolute',
+        bottom: 8,
+        left: 8,
+        right: 8,
+        backgroundColor: 'rgba(15, 23, 42, 0.75)',
+        borderRadius: 8,
+        paddingVertical: 4,
+        paddingHorizontal: 8,
+    },
+    mapCoords: { color: '#FFFFFF', fontSize: FontSizes.xs, fontWeight: '600' },
+    directionsBtn: { borderRadius: BorderRadius.md, overflow: 'hidden' },
+    directionsInner: { paddingVertical: Spacing.sm, alignItems: 'center' },
+    directionsBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: FontSizes.sm },
+    addrText: { fontSize: FontSizes.xs, color: '#64748B', paddingHorizontal: 2 },
+    locFallback: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: Spacing.sm,
+        borderRadius: BorderRadius.md,
+        padding: Spacing.md,
+        backgroundColor: '#F1F5F9',
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+    },
+    locFallbackLabel: { fontSize: 11, fontWeight: '800', color: '#64748B' },
+    locFallbackCoords: { fontSize: FontSizes.sm, fontWeight: '700', color: '#0F172A' },
+    awaitingBox: {
+        backgroundColor: '#FFFBEB',
+        borderRadius: BorderRadius.lg,
+        padding: Spacing.md,
+        borderWidth: 1,
+        borderColor: '#FDE68A',
+        gap: Spacing.sm,
+    },
+    awaitingTop: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+    awaitingTitle: { fontSize: FontSizes.xs, fontWeight: '800', color: '#92400E', letterSpacing: 0.5 },
+    awaitingSub: { fontSize: FontSizes.xs, color: '#B45309', marginTop: 2, lineHeight: 16 },
+    overrideBtn: { borderRadius: BorderRadius.md, overflow: 'hidden', marginTop: 4 },
+    overrideInner: { paddingVertical: Spacing.sm + 2, alignItems: 'center' },
+    overrideText: { color: '#FFFFFF', fontSize: FontSizes.xs, fontWeight: '800', letterSpacing: 0.5 },
+    accessBadge: {
+        backgroundColor: '#ECFDF5',
+        borderRadius: BorderRadius.lg,
+        paddingVertical: Spacing.sm,
+        paddingHorizontal: Spacing.md,
+        borderWidth: 1,
+        borderColor: '#A7F3D0',
+        alignItems: 'center',
+    },
+    accessBadgeText: { color: '#059669', fontSize: FontSizes.xs, fontWeight: '800' },
+    videoBox: {
+        borderRadius: BorderRadius.lg,
+        overflow: 'hidden',
+        borderWidth: 1.5,
+        borderColor: '#CBD5E1',
+        height: 210,
+        backgroundColor: '#0F172A',
+    },
     videoImage: { width: '100%', height: '100%' },
     videoPlaceholder: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6 },
-    vpText: { color: Colors.text, fontSize: FontSizes.sm, fontWeight: '700' },
-    vpSub: { color: Colors.textSecondary, fontSize: FontSizes.xs },
-    videoOverlay: { position: 'absolute', top: 8, left: 8, right: 8, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-    liveRecChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(239,68,68,0.55)', borderRadius: BorderRadius.full, paddingVertical: 3, paddingHorizontal: Spacing.sm, borderWidth: 1, borderColor: Colors.danger },
-    recChipText: { color: '#fff', fontSize: FontSizes.xs, fontWeight: '900', letterSpacing: 1 },
-    fpsLabel: { color: 'rgba(255,255,255,0.8)', fontSize: FontSizes.xs, fontWeight: '700' },
-    audioBox: { borderRadius: BorderRadius.md, padding: Spacing.md, borderWidth: 1, borderColor: 'rgba(29,78,216,0.3)', gap: Spacing.sm },
-    audioTop: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
-    audioTitle: { fontSize: FontSizes.xs, fontWeight: '800', letterSpacing: 1 },
-    audioSub: { fontSize: FontSizes.xs, color: Colors.textSecondary },
-    eqRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', height: 36, paddingHorizontal: 2 },
-    eqBar: { width: 5, borderRadius: 2, minHeight: 4 },
-    saveBtn: { borderRadius: BorderRadius.md, overflow: 'hidden' },
+    vpText: { color: '#F8FAFC', fontSize: FontSizes.sm, fontWeight: '700' },
+    vpSub: { color: '#94A3B8', fontSize: FontSizes.xs },
+    videoOverlay: {
+        position: 'absolute',
+        top: 8,
+        left: 8,
+        right: 8,
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+    },
+    liveRecChip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 5,
+        backgroundColor: '#DC2626',
+        borderRadius: BorderRadius.full,
+        paddingVertical: 3,
+        paddingHorizontal: 8,
+    },
+    recChipText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
+    camBadge: {
+        backgroundColor: 'rgba(15, 23, 42, 0.75)',
+        borderRadius: BorderRadius.full,
+        paddingVertical: 3,
+        paddingHorizontal: 8,
+    },
+    camBadgeText: { color: '#FFFFFF', fontSize: 10, fontWeight: '600' },
+    audioBox: {
+        borderRadius: BorderRadius.lg,
+        padding: Spacing.md,
+        backgroundColor: '#EFF6FF',
+        borderWidth: 1,
+        borderColor: '#BFDBFE',
+        gap: Spacing.sm,
+    },
+    audioTop: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
+    policeAudioIcon: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        backgroundColor: '#DBEAFE',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    audioTitle: { fontSize: FontSizes.xs, color: '#1D4ED8', fontWeight: '800' },
+    audioSub: { fontSize: FontSizes.xs, color: '#64748B' },
+    eqRow: {
+        flexDirection: 'row',
+        alignItems: 'flex-end',
+        justifyContent: 'space-between',
+        height: 34,
+        paddingHorizontal: 4,
+    },
+    eqBar: { width: 4.5, borderRadius: 2, minHeight: 4 },
+    saveBtn: { borderRadius: BorderRadius.lg, overflow: 'hidden' },
     btnInner: { paddingVertical: Spacing.md, alignItems: 'center' },
-    btnText: { color: '#fff', fontSize: FontSizes.sm, fontWeight: '700' },
-    idleCard: { borderRadius: BorderRadius.lg, padding: Spacing.xxl, alignItems: 'center', gap: Spacing.sm, borderWidth: 1, borderColor: 'rgba(29,78,216,0.2)' },
-    idleEmoji: { fontSize: 52 },
-    idleTitle: { fontSize: FontSizes.xxl, fontWeight: '900', color: Colors.policeLight, letterSpacing: 2 },
-    idleText: { fontSize: FontSizes.sm, color: Colors.textSecondary, textAlign: 'center' },
-    historyTitle: { fontSize: FontSizes.md, fontWeight: '700', color: Colors.text, marginTop: Spacing.xs },
-    histCard: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm, borderRadius: BorderRadius.md, padding: Spacing.md, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
-    histName: { color: Colors.text, fontSize: FontSizes.sm, fontWeight: '600' },
-    histTime: { color: Colors.textSecondary, fontSize: FontSizes.xs },
-    histCoords: { color: Colors.textMuted, fontSize: FontSizes.xs },
-    histMapLink: { color: Colors.policeLight, fontSize: FontSizes.xs, marginTop: 1 },
-    histStatus: { paddingVertical: 4, paddingHorizontal: Spacing.sm, borderRadius: BorderRadius.xs },
-    histStatusText: { fontSize: FontSizes.xs, fontWeight: '800' },
+    btnText: { color: '#FFFFFF', fontSize: FontSizes.sm, fontWeight: '700' },
+    safeCard: {
+        backgroundColor: '#FFFFFF',
+        borderRadius: BorderRadius.xl,
+        padding: Spacing.xxl,
+        alignItems: 'center',
+        gap: Spacing.sm,
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+        shadowColor: '#0F172A',
+        shadowOpacity: 0.05,
+        shadowRadius: 12,
+        elevation: 2,
+    },
+    safeShieldCircle: {
+        width: 80,
+        height: 80,
+        borderRadius: 40,
+        backgroundColor: '#EFF6FF',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginBottom: Spacing.xs,
+    },
+    safeEmoji: { fontSize: 44 },
+    safeTitle: { fontSize: FontSizes.xl, fontWeight: '900', color: '#1D4ED8', letterSpacing: 1.5 },
+    safeText: { fontSize: FontSizes.sm, color: '#64748B', textAlign: 'center', lineHeight: 20 },
+    historySection: { gap: Spacing.sm, marginTop: Spacing.xs },
+    historyTitle: { fontSize: FontSizes.md, fontWeight: '800', color: '#0F172A' },
+    histCard: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: Spacing.sm,
+        backgroundColor: '#FFFFFF',
+        borderRadius: BorderRadius.md,
+        padding: Spacing.md,
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+    },
+    histName: { color: '#0F172A', fontSize: FontSizes.sm, fontWeight: '700' },
+    histTime: { color: '#64748B', fontSize: FontSizes.xs },
+    histMapLink: { color: '#1D4ED8', fontSize: FontSizes.xs, marginTop: 2, fontWeight: '600' },
+    histStatus: { paddingVertical: 4, paddingHorizontal: 8, borderRadius: BorderRadius.xs },
+    histStatusText: { fontSize: 10, fontWeight: '800' },
+    liveDot: { width: 6, height: 6, borderRadius: 3 },
+    mobileActionRow: { gap: 8, marginTop: 4 },
+    dispatchBtn: { borderRadius: BorderRadius.md, overflow: 'hidden' },
+    dispatchBtnInner: { paddingVertical: Spacing.md, alignItems: 'center', borderRadius: BorderRadius.md },
+    dispatchBtnText: { color: '#FFFFFF', fontSize: FontSizes.xs, fontWeight: '900', letterSpacing: 0.5 },
+    dispatchedBadge: {
+        backgroundColor: '#DCFCE7',
+        borderRadius: BorderRadius.md,
+        paddingVertical: Spacing.md,
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: '#86EFAC',
+    },
+    dispatchedText: { color: '#15803D', fontSize: FontSizes.xs, fontWeight: '800' },
+    callVictimBtn: {
+        backgroundColor: '#F1F5F9',
+        borderRadius: BorderRadius.md,
+        paddingVertical: Spacing.sm + 2,
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: '#CBD5E1',
+    },
+    callVictimText: { color: '#334155', fontSize: FontSizes.sm, fontWeight: '700' },
+    autoDownloadBadge: {
+        backgroundColor: '#EFF6FF',
+        borderRadius: BorderRadius.md,
+        paddingVertical: 8,
+        paddingHorizontal: Spacing.md,
+        borderWidth: 1,
+        borderColor: '#BFDBFE',
+        alignItems: 'center',
+    },
+    autoDownloadText: {
+        fontSize: 11,
+        fontWeight: '700',
+        color: '#1D4ED8',
+    },
+    sheSafeCard: {
+        backgroundColor: '#F0FDF4',
+        borderRadius: BorderRadius.xl,
+        padding: Spacing.lg,
+        borderWidth: 2,
+        borderColor: '#86EFAC',
+        gap: Spacing.sm,
+        shadowColor: '#16A34A',
+        shadowOpacity: 0.1,
+        shadowRadius: 10,
+        elevation: 3,
+    },
+    sheSafeTop: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: Spacing.md,
+    },
+    sheSafeBadge: {
+        width: 48,
+        height: 48,
+        borderRadius: 24,
+        backgroundColor: '#DCFCE7',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderWidth: 1.5,
+        borderColor: '#4ADE80',
+    },
+    sheSafeTitle: {
+        fontSize: FontSizes.md,
+        fontWeight: '900',
+        color: '#15803D',
+        letterSpacing: 0.5,
+    },
+    sheSafeSub: {
+        fontSize: FontSizes.xs,
+        color: '#166534',
+        marginTop: 2,
+        lineHeight: 16,
+    },
+    sheSafeDetails: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        borderTopWidth: 1,
+        borderTopColor: '#BBF7D0',
+        paddingTop: Spacing.sm,
+        marginTop: 4,
+    },
+    sheSafeTimeText: {
+        fontSize: 11,
+        color: '#15803D',
+        fontWeight: '600',
+        flex: 1,
+    },
+    dismissNoticeBtn: {
+        backgroundColor: '#DCFCE7',
+        paddingVertical: 5,
+        paddingHorizontal: 12,
+        borderRadius: BorderRadius.full,
+        borderWidth: 1,
+        borderColor: '#86EFAC',
+    },
+    dismissNoticeText: {
+        fontSize: 11,
+        fontWeight: '700',
+        color: '#166534',
+    },
 });

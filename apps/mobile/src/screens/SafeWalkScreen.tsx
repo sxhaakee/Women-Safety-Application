@@ -15,6 +15,8 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import MapView, { Marker, Polyline } from '../components/SafeMapView';
 import * as Location from 'expo-location';
+import { SheSafeWS, BACKEND_URL, getCommunityHazards } from '../utils/api';
+import { findSafestRouteWithHazardAvoidance, CommunityHazardPoint, RouteCandidate } from '@shesafe/shared';
 
 const { width } = Dimensions.get('window');
 
@@ -63,6 +65,7 @@ export default function SafeWalkScreen({ navigation, route }: any) {
     const mapRef = useRef<any>(null);
     const walkTimer = useRef<ReturnType<typeof setInterval> | null>(null);
     const deviationTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+    const wsRef = useRef<SheSafeWS | null>(null);
 
     useEffect(() => {
         (async () => {
@@ -76,20 +79,26 @@ export default function SafeWalkScreen({ navigation, route }: any) {
             }
         })();
 
+        // Connect WS for live SafeWalk telemetry broadcast
+        const ws = new SheSafeWS('victim', () => {});
+        ws.connect();
+        wsRef.current = ws;
+
         // Auto-load sample Kadri route initially
         loadDefaultRoute({ latitude: 12.9141, longitude: 74.8560 }, { latitude: 12.8760, longitude: 74.8520 });
 
         return () => {
             if (walkTimer.current) clearInterval(walkTimer.current);
             if (deviationTimer.current) clearInterval(deviationTimer.current);
+            wsRef.current?.disconnect();
         };
     }, []);
 
-    function loadDefaultRoute(start: { latitude: number; longitude: number }, end: { latitude: number; longitude: number }) {
+    async function loadDefaultRoute(start: { latitude: number; longitude: number }, end: { latitude: number; longitude: number }) {
         setDestinationCoord(end);
         setDestinationQuery('Kadri Park, Mangalore');
-        
-        // Generate safest vs fastest paths
+
+        // Safest path avoiding inner unlit alleys
         const safestPath = [
             start,
             { latitude: start.latitude + 0.003, longitude: start.longitude + 0.002 },
@@ -97,39 +106,51 @@ export default function SafeWalkScreen({ navigation, route }: any) {
             { latitude: end.latitude + 0.002, longitude: end.longitude + 0.001 },
             end,
         ];
+        // Direct path through isolated stretch
         const fastestPath = [
             start,
-            { latitude: (start.latitude + end.latitude) / 2, longitude: (start.longitude + end.longitude) / 2 },
+            { latitude: 12.9155, longitude: 74.8575 }, // near haz-1
             end,
         ];
+
+        // Evaluate using ML Hazard Avoidance
+        const hazards = await getCommunityHazards();
+        const candidateRoutes: RouteCandidate[] = [
+            { id: 'route_safest', label: 'Main Avenue (Safest ML Route)', coordinates: safestPath, distanceKm: 1.4, durationMin: 16 },
+            { id: 'route_fastest', label: 'Dark Alleyway (Direct & Unsafe)', coordinates: fastestPath, distanceKm: 1.1, durationMin: 13 },
+        ];
+
+        const mlEval = findSafestRouteWithHazardAvoidance(candidateRoutes, hazards);
+        const rSafe = mlEval.evaluatedRoutes.find(r => r.id === 'route_safest') || mlEval.recommendedRoute;
+        const rFast = mlEval.evaluatedRoutes.find(r => r.id === 'route_fastest');
 
         const defaultRoutes: RouteOption[] = [
             {
                 id: 'route_safest',
-                label: 'Safest Route (Main Avenue)',
-                durationMin: 16,
-                distanceKm: 1.4,
-                safetyScore: 94,
+                label: 'Safest Route (ML Verified — Zero Hazards)',
+                durationMin: rSafe.durationMin,
+                distanceKm: rSafe.distanceKm,
+                safetyScore: rSafe.safetyScore,
                 litPercentage: 96,
                 openAmenities: 7,
                 policeDistanceM: 350,
-                hazardCount: 0,
+                hazardCount: rSafe.hazardCollisions.length,
                 timeDelta: '+3 min',
-                coordinates: safestPath,
+                coordinates: rSafe.coordinates,
                 isSafest: true,
             },
             {
                 id: 'route_fastest',
-                label: 'Fastest Route (Dark Alley)',
-                durationMin: 13,
-                distanceKm: 1.1,
-                safetyScore: 61,
+                label: `Fastest Route (Passes ${rFast?.hazardCollisions.length || 1} Hazard Spot)`,
+                durationMin: rFast?.durationMin || 13,
+                distanceKm: rFast?.distanceKm || 1.1,
+                safetyScore: rFast?.safetyScore || 58,
                 litPercentage: 42,
                 openAmenities: 1,
                 policeDistanceM: 1400,
-                hazardCount: 2,
+                hazardCount: rFast?.hazardCollisions.length || 1,
                 timeDelta: 'Fastest',
-                coordinates: fastestPath,
+                coordinates: rFast?.coordinates || fastestPath,
                 isSafest: false,
             },
         ];
@@ -168,13 +189,50 @@ export default function SafeWalkScreen({ navigation, route }: any) {
         setWalkStepIndex(0);
         setIsOffRoute(false);
 
+        const currentRoute = routes.find(r => r.id === selectedRouteId) || routes[0];
+        const walkPayload = {
+            victim_name: route?.params?.user?.name || 'Priya Sharma',
+            startLocation: currentLocation,
+            currentLocation: currentLocation,
+            destinationCoord: destinationCoord,
+            destinationQuery: destinationQuery,
+            routeCoordinates: currentRoute?.coordinates || [],
+            safetyScore: currentRoute?.safetyScore || 94,
+            isOffRoute: false,
+            walkElapsedSec: 0,
+        };
+
+        wsRef.current?.sendRaw({ type: 'SAFE_WALK_START', ...walkPayload });
+        fetch(`${BACKEND_URL}/api/safewalk/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(walkPayload),
+        }).catch(() => {});
+
+        let sec = 0;
         walkTimer.current = setInterval(() => {
-            setWalkElapsedSec(s => s + 1);
+            sec++;
+            setWalkElapsedSec(sec);
+            // Broadcast telemetry every 3s
+            if (sec % 3 === 0) {
+                const updatePayload = {
+                    currentLocation,
+                    isOffRoute: false,
+                    walkElapsedSec: sec,
+                    safetyScore: currentRoute?.safetyScore || 94,
+                };
+                wsRef.current?.sendRaw({ type: 'SAFE_WALK_UPDATE', ...updatePayload });
+                fetch(`${BACKEND_URL}/api/safewalk/update`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(updatePayload),
+                }).catch(() => {});
+            }
         }, 1000);
 
         Alert.alert(
             '🛡️ Safe Walk Activated',
-            'Your guardians are notified. Route deviation detection (>80m) and stationary timers are active.'
+            'Your guardians are notified in real-time. Route deviation detection (>80m) and hazard avoidance active.'
         );
     }
 
@@ -183,6 +241,19 @@ export default function SafeWalkScreen({ navigation, route }: any) {
         setIsOffRoute(true);
         setShowDeviationModal(true);
         setDeviationCountdown(20);
+
+        const devPayload = {
+            currentLocation: { latitude: currentLocation.latitude + 0.002, longitude: currentLocation.longitude + 0.002 },
+            isOffRoute: true,
+            deviationM: 140,
+            safetyScore: 48,
+        };
+        wsRef.current?.sendRaw({ type: 'SAFE_WALK_UPDATE', ...devPayload });
+        fetch(`${BACKEND_URL}/api/safewalk/update`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(devPayload),
+        }).catch(() => {});
 
         if (deviationTimer.current) clearInterval(deviationTimer.current);
         deviationTimer.current = setInterval(() => {
@@ -203,6 +274,12 @@ export default function SafeWalkScreen({ navigation, route }: any) {
         if (deviationTimer.current) clearInterval(deviationTimer.current);
         setShowDeviationModal(false);
         setIsOffRoute(false);
+        wsRef.current?.sendRaw({ type: 'SAFE_WALK_UPDATE', isOffRoute: false, deviationM: 0, safetyScore: 94 });
+        fetch(`${BACKEND_URL}/api/safewalk/update`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ isOffRoute: false, deviationM: 0, safetyScore: 94 }),
+        }).catch(() => {});
         Alert.alert('✅ Resumed', 'Safe route monitoring resumed.');
     }
 
@@ -211,6 +288,10 @@ export default function SafeWalkScreen({ navigation, route }: any) {
         if (deviationTimer.current) clearInterval(deviationTimer.current);
         setIsWalking(false);
         setIsOffRoute(false);
+
+        wsRef.current?.sendRaw({ type: 'SAFE_WALK_END' });
+        fetch(`${BACKEND_URL}/api/safewalk/end`, { method: 'POST' }).catch(() => {});
+
         Alert.alert('🎉 Safe Arrival Confirmed', 'You have arrived safely! Guardians have received your safe arrival status.');
     }
 

@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import MapView, { Marker } from '../components/SafeMapView';
 import { supabase } from '../utils/supabase';
+import { getCommunityHazards, reportCommunityHazard } from '../utils/api';
 import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
 
@@ -106,12 +107,20 @@ export default function CommunityReportsScreen({ navigation }: any) {
 
     async function fetchReports() {
         try {
-            const { data } = await supabase
-                .from('unsafe_reports')
-                .select('*')
-                .limit(20);
-            if (data && data.length > 0) {
-                // Merge Supabase reports if present
+            const serverHazards = await getCommunityHazards();
+            if (serverHazards && serverHazards.length > 0) {
+                const mapped: HazardReport[] = serverHazards.map((h: any) => ({
+                    id: h.id,
+                    category: h.category || 'dark',
+                    severity: h.severity || 3,
+                    title: h.title || 'Safety Hazard Spot',
+                    description: h.description || '',
+                    verifiedCount: h.verifiedCount || 1,
+                    reportedAgo: h.reportedAgo || 'Recently',
+                    coordinate: { latitude: h.latitude, longitude: h.longitude },
+                }));
+                setHazards(mapped);
+                return;
             }
         } catch (_) {}
     }
@@ -119,17 +128,6 @@ export default function CommunityReportsScreen({ navigation }: any) {
     async function submitReport() {
         setIsSubmitting(true);
         try {
-            const randomBytes = await Crypto.getRandomBytesAsync(32);
-            const reporterHash = '\\x' + Array.from(randomBytes, b => b.toString(16).padStart(2, '0')).join('');
-
-            await supabase.from('unsafe_reports').insert({
-                geom: `SRID=4326;POINT(${location.longitude} ${location.latitude})`,
-                category: selectedCategory,
-                severity: severity,
-                reporter_hash: reporterHash,
-            });
-
-            // Add to local state
             const catObj = CATEGORIES.find(c => c.id === selectedCategory) || CATEGORIES[0]!;
             const newReport: HazardReport = {
                 id: `rep_${Date.now()}`,
@@ -141,11 +139,21 @@ export default function CommunityReportsScreen({ navigation }: any) {
                 reportedAgo: 'Just now',
                 coordinate: { ...location },
             };
+
+            await reportCommunityHazard({
+                title: newReport.title,
+                category: newReport.category,
+                severity: newReport.severity,
+                latitude: location.latitude,
+                longitude: location.longitude,
+                description: newReport.description,
+            });
+
             setHazards(prev => [newReport, ...prev]);
 
             Alert.alert(
                 '✅ Hazard Spot Reported',
-                'Your report has been cryptographically recorded. Safe Walk routing algorithms will now avoid this point for all women.'
+                'Your report has been broadcasted to guardians and control rooms. Safe Walk ML algorithms will automatically steer routes around this flagged point.'
             );
             setModalVisible(false);
         } catch (e: any) {

@@ -29,12 +29,15 @@ import {
     RecordingPresets,
     requestRecordingPermissionsAsync,
     setAudioModeAsync,
+    createAudioPlayer,
+    AudioPlayer,
 } from 'expo-audio';
 import * as Location from 'expo-location';
 import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, BorderRadius } from '../theme';
-import { SheSafeUser, SheSafeWS, fireAlert, sendLocationPing, resolveAlert } from '../utils/api';
+import { SheSafeUser, SheSafeWS, fireAlert, sendLocationPing, resolveAlert, BACKEND_URL } from '../utils/api';
+import { outboxEnqueue } from '../outbox/OutboxDB';
 
 export default function AlertFiredScreen({ navigation, route }: any) {
     const user: SheSafeUser = route?.params?.user;
@@ -52,8 +55,9 @@ export default function AlertFiredScreen({ navigation, route }: any) {
     const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
 
     // ── Refs ───────────────────────────────────────────────────
-    const camRef       = useRef<CameraView>(null);
-    const audioTimer   = useRef<any>(null);
+    const camRef         = useRef<CameraView>(null);
+    const sirenPlayerRef = useRef<AudioPlayer | null>(null);
+    const audioTimer     = useRef<any>(null);
     const gpsTimer     = useRef<any>(null);
     const vidTimer     = useRef<any>(null);
     const elapsedTimer = useRef<any>(null);
@@ -153,14 +157,15 @@ export default function AlertFiredScreen({ navigation, route }: any) {
             console.warn('[ALERT] GPS error:', e?.message);
         }
 
-        // Fire SOS alert on server
+        // Fire SOS alert on server (offline-first: queue in outbox if server unreachable)
         console.log('[ALERT] 🚨 Firing SOS alert on server...');
-        const fired = await fireAlert({
+        const alertPayload = {
             victim_id:    user?.id    ?? 'victim-001',
             victim_name:  user?.name  ?? 'Unknown Victim',
             victim_phone: user?.phone ?? '+91 00000 00000',
             lat, lng, address: addr,
-        });
+        };
+        const fired = await fireAlert(alertPayload);
         if (fired) {
             alertId.current = fired.id;
             console.log('[ALERT] ✅ Alert ID:', fired.id);
@@ -175,7 +180,19 @@ export default function AlertFiredScreen({ navigation, route }: any) {
                 } catch (_) {}
             }, 5000);
         } else {
-            console.warn('[ALERT] ⚠️ fireAlert returned null — server may be down');
+            // Offline fallback: generate a local UUID and queue in outbox
+            const localId = `LOCAL-${Date.now()}`;
+            alertId.current = localId;
+            await outboxEnqueue('fire', localId, alertPayload, 0);
+            console.warn('[ALERT] ⚠️ Server unreachable — alert queued in outbox as', localId);
+            // Still start GPS so we capture track when reconnected
+            gpsTimer.current = setInterval(async () => {
+                if (!mounted.current || !alertId.current) return;
+                try {
+                    const l = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+                    await sendLocationPing(alertId.current, l.coords.latitude, l.coords.longitude);
+                } catch (_) {}
+            }, 5000);
         }
 
         // Camera
@@ -201,6 +218,18 @@ export default function AlertFiredScreen({ navigation, route }: any) {
             await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
             console.log('[AUDIO] ✅ Starting rolling 5s audio recording');
             recordAudio();
+        }
+
+        // Siren sound played out loud on victim's phone along with recording
+        try {
+            const sirenAsset = require('../../assets/siren.wav');
+            const player = createAudioPlayer(sirenAsset);
+            player.loop = true;
+            sirenPlayerRef.current = player;
+            player.play();
+            console.log('[ALERT] 📢 Siren started playing out loud');
+        } catch (e: any) {
+            console.warn('[ALERT] Siren player error:', e?.message);
         }
     };
 
@@ -272,6 +301,9 @@ export default function AlertFiredScreen({ navigation, route }: any) {
     const recordAudio = async () => {
         if (!mounted.current) return;
         try {
+            if (recorder.isRecording) {
+                try { await recorder.stop(); } catch (_) {}
+            }
             await recorder.prepareToRecordAsync();
             recorder.record();
             const seq = audioSeq.current++;
@@ -285,8 +317,23 @@ export default function AlertFiredScreen({ navigation, route }: any) {
                     if (uri && alertId.current && wsRef.current) {
                         const b64 = (await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 }))
                             .replace(/[\r\n\s]/g, '');
-                        wsRef.current.sendRaw({ type: 'AUDIO_CHUNK', alert_id: alertId.current, data: b64, seq, mime: 'audio/m4a' });
-                        console.log(`[AUDIO] ✅ Chunk #${seq} sent (${Math.round(b64.length / 1024)} KB)`);
+                        // Send live via WS
+                        const sent = wsRef.current.sendRaw({
+                            type: 'AUDIO_CHUNK',
+                            alert_id: alertId.current,
+                            data: b64,
+                            seq,
+                            mime: 'audio/m4a',
+                        });
+                        console.log(`[AUDIO] ✅ Chunk #${seq} sent (${Math.round(b64.length / 1024)} KB) sent=${sent}`);
+                        // Persist to backend storage
+                        fetch(`${BACKEND_URL}/api/recording/save`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ alert_id: alertId.current, audio_b64: b64, mime_type: 'audio/m4a' }),
+                        }).catch(() => {});
+                        // Also queue in outbox for reliable sync
+                        await outboxEnqueue('audio', alertId.current, { data: b64, mime: 'audio/m4a', seq }, seq);
                         await FileSystem.deleteAsync(uri, { idempotent: true });
                     }
                 } catch (e: any) {
@@ -302,6 +349,13 @@ export default function AlertFiredScreen({ navigation, route }: any) {
 
     const stopAudio = async () => {
         if (audioTimer.current) clearTimeout(audioTimer.current);
+        try {
+            if (sirenPlayerRef.current) {
+                sirenPlayerRef.current.pause();
+                sirenPlayerRef.current.remove();
+                sirenPlayerRef.current = null;
+            }
+        } catch (_) {}
         try {
             if (recorder.isRecording) {
                 await recorder.stop();
@@ -324,11 +378,20 @@ export default function AlertFiredScreen({ navigation, route }: any) {
                 clearInterval(vidTimer.current);
                 clearInterval(elapsedTimer.current);
                 stopAudio();
-                if (alertId.current) {
-                    await resolveAlert(alertId.current);
-                    console.log('[PIN] 📡 Alert resolved on server');
-                }
-                wsRef.current?.disconnect();
+                const aid = alertId.current || 'active';
+                // Send WS message immediately so Guardian & Police react in real-time
+                wsRef.current?.sendRaw({
+                    type: 'ALERT_RESOLVED',
+                    alert_id: aid,
+                    alert: { id: aid, status: 'resolved' },
+                    victim_name: user?.name || 'Priya Sharma',
+                });
+                await resolveAlert(aid);
+                await outboxEnqueue('cancel', aid, {}, 0);
+                console.log('[PIN] 📡 Alert resolved on server + broadcasted');
+                setTimeout(() => {
+                    wsRef.current?.disconnect();
+                }, 500);
                 navigation.reset({ index: 0, routes: [{ name: 'VictimDashboard', params: { user } }] });
             }, 800);
         } else {

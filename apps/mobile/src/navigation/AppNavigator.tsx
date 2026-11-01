@@ -10,6 +10,7 @@ import LoginScreen from '../screens/LoginScreen';
 import VictimDashboard from '../screens/DashboardScreen';
 import GuardianDashboard from '../screens/GuardianDashboard';
 import PoliceDashboard from '../screens/PoliceDashboard';
+import VolunteerDashboard from '../screens/VolunteerDashboard';
 
 // Alert flow
 import AlertCountdownScreen from '../screens/AlertCountdownScreen';
@@ -20,6 +21,7 @@ import DemoDirectorScreen from '../screens/DemoDirectorScreen';
 import SafeWalkScreen from '../screens/SafeWalkScreen';
 import CabGuardianScreen from '../screens/CabGuardianScreen';
 import CommunityReportsScreen from '../screens/CommunityReportsScreen';
+import SensorCalibrationScreen from '../screens/SensorCalibrationScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -78,12 +80,20 @@ export default function AppNavigator() {
                     component={CommunityReportsScreen}
                     options={{ headerShown: false, animation: 'slide_from_right' }}
                 />
+                <Stack.Screen
+                    name="SensorCalibration"
+                    component={SensorCalibrationScreen}
+                    options={{ headerShown: false, animation: 'slide_from_right' }}
+                />
 
                 {/* Guardian */}
                 <Stack.Screen name="GuardianDashboard" component={GuardianDashboard} />
 
                 {/* Police */}
                 <Stack.Screen name="PoliceDashboard" component={PoliceDashboard} />
+
+                {/* Volunteer / Rakshak */}
+                <Stack.Screen name="VolunteerDashboard" component={VolunteerDashboard} />
             </Stack.Navigator>
         </NavigationContainer>
     );

@@ -15,6 +15,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import MapView, { Marker, Polyline } from '../components/SafeMapView';
 import * as Location from 'expo-location';
+import { SheSafeWS, BACKEND_URL } from '../utils/api';
 
 const { width } = Dimensions.get('window');
 
@@ -59,6 +60,7 @@ export default function CabGuardianScreen({ navigation, route }: any) {
     const rideTimer = useRef<ReturnType<typeof setInterval> | null>(null);
     const detourTimer = useRef<ReturnType<typeof setInterval> | null>(null);
     const locationSub = useRef<Location.LocationSubscription | null>(null);
+    const wsRef = useRef<SheSafeWS | null>(null);
 
     useEffect(() => {
         (async () => {
@@ -69,10 +71,16 @@ export default function CabGuardianScreen({ navigation, route }: any) {
             }
         })();
 
+        // Connect WS for live Cab Guardian telemetry
+        const ws = new SheSafeWS('victim', () => {});
+        ws.connect();
+        wsRef.current = ws;
+
         return () => {
             if (rideTimer.current) clearInterval(rideTimer.current);
             if (detourTimer.current) clearInterval(detourTimer.current);
             locationSub.current?.remove();
+            wsRef.current?.disconnect();
         };
     }, []);
 
@@ -88,17 +96,68 @@ export default function CabGuardianScreen({ navigation, route }: any) {
         setIsDetour(false);
         setDeviationM(0);
 
+        const cabPayload = {
+            victim_name: route?.params?.user?.name || 'Priya Sharma',
+            cabType,
+            plateNumber,
+            driverName: driverName || 'Ramesh',
+            destination: destination || 'Kadri Park',
+            location,
+            cabPath,
+            speedKmh: 42,
+            deviationM: 0,
+            isDetour: false,
+            rideDurationSec: 0,
+        };
+
+        wsRef.current?.sendRaw({ type: 'CAB_GUARDIAN_START', ...cabPayload });
+        fetch(`${BACKEND_URL}/api/cab/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cabPayload),
+        }).catch(() => {});
+
+        let dur = 0;
         rideTimer.current = setInterval(() => {
-            setRideDurationSec(s => s + 1);
+            dur++;
+            setRideDurationSec(dur);
+            if (dur % 3 === 0) {
+                const updatePayload = {
+                    location,
+                    speedKmh: 42,
+                    deviationM: isDetour ? 620 : 0,
+                    isDetour,
+                    rideDurationSec: dur,
+                };
+                wsRef.current?.sendRaw({ type: 'CAB_GUARDIAN_UPDATE', ...updatePayload });
+                fetch(`${BACKEND_URL}/api/cab/update`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(updatePayload),
+                }).catch(() => {});
+            }
         }, 1000);
 
         // Location monitoring
         Location.watchPositionAsync(
             { accuracy: Location.Accuracy.High, distanceInterval: 10, timeInterval: 3000 },
             (loc) => {
-                setLocation({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
+                const newLoc = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+                setLocation(newLoc);
                 const spd = Math.max(0, Math.round((loc.coords.speed || 0) * 3.6));
-                setSpeedKmh(spd > 0 ? spd : 45);
+                const finalSpd = spd > 0 ? spd : 45;
+                setSpeedKmh(finalSpd);
+
+                wsRef.current?.sendRaw({
+                    type: 'CAB_GUARDIAN_UPDATE',
+                    location: newLoc,
+                    speedKmh: finalSpd,
+                });
+                fetch(`${BACKEND_URL}/api/cab/update`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ location: newLoc, speedKmh: finalSpd }),
+                }).catch(() => {});
             }
         ).then(sub => {
             locationSub.current = sub;
@@ -106,7 +165,7 @@ export default function CabGuardianScreen({ navigation, route }: any) {
 
         Alert.alert(
             '🚕 Cab Guardian Armed',
-            `Monitoring ${plateNumber.toUpperCase()}. Live GPS shared with guardians. Speed & route deviation guards are active.`
+            `Monitoring ${plateNumber.toUpperCase()}. Live GPS shared with guardians in real time. Speed & route deviation guards are active.`
         );
     }
 
@@ -116,6 +175,19 @@ export default function CabGuardianScreen({ navigation, route }: any) {
         setDeviationM(620);
         setShowDetourModal(true);
         setDetourCountdown(30);
+
+        const detourPayload = {
+            location: { latitude: location.latitude + 0.005, longitude: location.longitude - 0.006 },
+            isDetour: true,
+            deviationM: 620,
+            speedKmh: 58,
+        };
+        wsRef.current?.sendRaw({ type: 'CAB_GUARDIAN_UPDATE', ...detourPayload });
+        fetch(`${BACKEND_URL}/api/cab/update`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(detourPayload),
+        }).catch(() => {});
 
         if (detourTimer.current) clearInterval(detourTimer.current);
         detourTimer.current = setInterval(() => {
@@ -136,7 +208,25 @@ export default function CabGuardianScreen({ navigation, route }: any) {
         setShowDetourModal(false);
         setIsDetour(false);
         setDeviationM(0);
+        wsRef.current?.sendRaw({ type: 'CAB_GUARDIAN_UPDATE', isDetour: false, deviationM: 0 });
+        fetch(`${BACKEND_URL}/api/cab/update`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ isDetour: false, deviationM: 0 }),
+        }).catch(() => {});
         Alert.alert('✅ Confirmed Safe', 'Route monitoring resumed.');
+    }
+
+    function endRide() {
+        if (rideTimer.current) clearInterval(rideTimer.current);
+        if (detourTimer.current) clearInterval(detourTimer.current);
+        locationSub.current?.remove();
+        setIsRideActive(false);
+        setIsDetour(false);
+        setDeviationM(0);
+        wsRef.current?.sendRaw({ type: 'CAB_GUARDIAN_END' });
+        fetch(`${BACKEND_URL}/api/cab/end`, { method: 'POST' }).catch(() => {});
+        Alert.alert('🚕 Ride Completed', 'Cab Guardian disarmed. Safe destination arrival recorded.');
     }
 
     async function shareTrackingLink() {
@@ -145,14 +235,6 @@ export default function CabGuardianScreen({ navigation, route }: any) {
                 message: `🛡️ SheSafe Live Cab Tracking: I am traveling in ${plateNumber.toUpperCase()} (${cabType.toUpperCase()}). Track my ride live: https://shesafe.app/w/demo-ride-token`,
             });
         } catch (_) {}
-    }
-
-    function endRide() {
-        if (rideTimer.current) clearInterval(rideTimer.current);
-        if (detourTimer.current) clearInterval(detourTimer.current);
-        locationSub.current?.remove();
-        setIsRideActive(false);
-        Alert.alert('🎉 Safe Arrival', 'Cab Guardian disarmed. Hope you had a safe and comfortable ride!');
     }
 
     function triggerSOS() {
