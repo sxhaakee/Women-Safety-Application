@@ -94,3 +94,4 @@ When the judges ask: *"How did you train your ML model and what approach did you
 > 1. *First, we have an **Adaptive Gaussian Calibration model** that personalizes acceleration and jerk thresholds to each woman's grip and motor patterns, eliminating false alarms.*
 > 2. *Second, our **Multi-Factor Risk Engine** fuses spatial crime logs and community hazard radars using **spatial-temporal exponential decay kernels** $\exp(-d/\sigma)$, giving real-time threat scores based on proximity, lighting, and time of day.*
 > 3. *Third, our **Dynamic Hazard Avoidance Routing** automatically maps and avoids dangerous or unlit corridors, guaranteeing that guardians and victims always have mathematically verified safe routes."*
+

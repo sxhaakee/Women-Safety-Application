@@ -127,8 +127,11 @@ const SafeMapView = ({ children, style, region, initialRegion }: SafeMapViewProp
                 style={{
                     width: '100%',
                     height: '100%',
+                    minHeight: 240,
                     border: 'none',
                     borderRadius: 12,
+                    flex: 1,
+                    display: 'block',
                 }}
             />
         </View>
@@ -138,7 +141,8 @@ const SafeMapView = ({ children, style, region, initialRegion }: SafeMapViewProp
 const styles = StyleSheet.create({
     container: {
         width: '100%',
-        minHeight: 220,
+        minHeight: 240,
+        flex: 1,
         borderRadius: 12,
         overflow: 'hidden',
         borderWidth: 1,

@@ -55,7 +55,9 @@ export default function AlertFiredScreen({ navigation, route }: any) {
     const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
 
     // ── Refs ───────────────────────────────────────────────────
-    const camRef         = useRef<CameraView>(null);
+    // Direct browser MediaRecorder ref for rock-solid 10-second web recording
+    const webMediaRecorderRef = useRef<any>(null);
+    const webAudioStreamRef   = useRef<any>(null);
     const sirenPlayerRef = useRef<AudioPlayer | null>(null);
     const audioTimer     = useRef<any>(null);
     const gpsTimer     = useRef<any>(null);
@@ -67,6 +69,7 @@ export default function AlertFiredScreen({ navigation, route }: any) {
     const wsRef        = useRef<SheSafeWS | null>(null);
     const mounted      = useRef(true);
     const capturing    = useRef(false);
+    const camRef       = useRef<any>(null);
     const savedPin     = useRef('1234'); // will be loaded from AsyncStorage
 
     // ── Animations ─────────────────────────────────────────────
@@ -300,6 +303,76 @@ export default function AlertFiredScreen({ navigation, route }: any) {
     // ── Rolling audio ─────────────────────────────────────────
     const recordAudio = async () => {
         if (!mounted.current) return;
+
+        // WEB BROWSER IMPLEMENTATION: Use browser MediaRecorder with MediaStream
+        if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.mediaDevices) {
+            try {
+                if (!webAudioStreamRef.current) {
+                    webAudioStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+                }
+                const stream = webAudioStreamRef.current;
+                const mr = new (window as any).MediaRecorder(stream);
+                const recordedChunks: Blob[] = [];
+
+                mr.ondataavailable = (e: any) => {
+                    if (e.data && e.data.size > 0) {
+                        recordedChunks.push(e.data);
+                    }
+                };
+
+                mr.onstop = async () => {
+                    if (!mounted.current) return;
+                    try {
+                        const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+                        if (blob.size > 0 && alertId.current && wsRef.current) {
+                            const reader = new FileReader();
+                            reader.onloadend = () => {
+                                const res = (reader.result as string) || '';
+                                const b64 = res.includes(',') ? res.split(',')[1] : res;
+                                const seq = audioSeq.current++;
+                                console.log(`[AUDIO WEB] 🎤 Captured 10s audio (${Math.round(b64.length / 1024)} KB)`);
+
+                                wsRef.current?.sendRaw({
+                                    type: 'AUDIO_CHUNK',
+                                    alert_id: alertId.current,
+                                    data: b64,
+                                    seq,
+                                    mime: 'audio/mp3',
+                                });
+
+                                fetch(`${BACKEND_URL}/api/recording/save`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ alert_id: alertId.current, audio_b64: b64, mime_type: 'audio/mp3' }),
+                                }).catch(() => {});
+                            };
+                            reader.readAsDataURL(blob);
+                        }
+                    } catch (err) {
+                        console.warn('[AUDIO WEB PROCESSING ERROR]', err);
+                    }
+                    if (mounted.current) {
+                        recordAudio();
+                    }
+                };
+
+                webMediaRecorderRef.current = mr;
+                mr.start();
+                console.log('[AUDIO WEB] 🎙️ Recording live microphone for full 10 seconds...');
+
+                audioTimer.current = setTimeout(() => {
+                    if (mr && mr.state === 'recording') {
+                        mr.stop();
+                    }
+                }, 10000);
+            } catch (err: any) {
+                console.warn('[AUDIO WEB ERROR]', err?.message);
+                if (mounted.current) audioTimer.current = setTimeout(recordAudio, 3000);
+            }
+            return;
+        }
+
+        // NATIVE MOBILE IMPLEMENTATION (iOS / Android)
         try {
             if (recorder.isRecording) {
                 try { await recorder.stop(); } catch (_) {}
@@ -316,48 +389,26 @@ export default function AlertFiredScreen({ navigation, route }: any) {
                     const uri = recorder.uri;
                     if (uri && alertId.current && wsRef.current) {
                         let b64 = '';
-                        if (uri.startsWith('blob:') || uri.startsWith('http')) {
-                            try {
-                                const resp = await fetch(uri);
-                                const blob = await resp.blob();
-                                b64 = await new Promise<string>((resolve) => {
-                                    const reader = new FileReader();
-                                    reader.onloadend = () => {
-                                        const res = (reader.result as string) || '';
-                                        resolve(res.includes(',') ? res.split(',')[1] : res);
-                                    };
-                                    reader.readAsDataURL(blob);
-                                });
-                            } catch (err) {
-                                console.warn('[AUDIO BLOB CONVERT ERROR]', err);
-                            }
-                        } else {
-                            try {
-                                b64 = (await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 })).replace(/[\r\n\s]/g, '');
-                            } catch (err) {
-                                console.warn('[AUDIO FILESYSTEM CONVERT ERROR]', err);
-                            }
+                        try {
+                            b64 = (await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 })).replace(/[\r\n\s]/g, '');
+                        } catch (err) {
+                            console.warn('[AUDIO FILESYSTEM CONVERT ERROR]', err);
                         }
 
                         if (!b64 || b64.length === 0) {
-                            // Synthesize reliable active tone chunk so audio stream never drops
                             b64 = 'UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
                         }
 
                         // Play recorded chunk out loud on victim device along with siren
                         try {
-                            if (Platform.OS === 'web' && typeof window !== 'undefined') {
-                                const victimLoud = new window.Audio(`data:audio/m4a;base64,${b64}`);
-                                victimLoud.volume = 1.0;
-                                victimLoud.play().catch(() => {});
-                            } else if (uri && !uri.startsWith('blob:')) {
+                            if (uri) {
                                 const player = createAudioPlayer(uri);
                                 player.volume = 1.0;
                                 player.play();
                             }
                         } catch (_) {}
 
-                        // Send live via WS to Guardian & Police (formatted as mp3 for universal playback & download)
+                        // Send live via WS to Guardian & Police
                         const sent = wsRef.current.sendRaw({
                             type: 'AUDIO_CHUNK',
                             alert_id: alertId.current,
@@ -376,9 +427,7 @@ export default function AlertFiredScreen({ navigation, route }: any) {
 
                         // Also queue in outbox for reliable sync
                         await outboxEnqueue('audio', alertId.current, { data: b64, mime: 'audio/mp3', seq }, seq);
-                        if (!uri.startsWith('blob:')) {
-                            await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
-                        }
+                        await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
                     }
                 } catch (e: any) {
                     console.warn('[AUDIO] Chunk error:', e?.message);
@@ -393,6 +442,15 @@ export default function AlertFiredScreen({ navigation, route }: any) {
 
     const stopAudio = async () => {
         if (audioTimer.current) clearTimeout(audioTimer.current);
+        try {
+            if (webMediaRecorderRef.current && webMediaRecorderRef.current.state === 'recording') {
+                webMediaRecorderRef.current.stop();
+            }
+            if (webAudioStreamRef.current) {
+                webAudioStreamRef.current.getTracks().forEach((t: any) => t.stop());
+                webAudioStreamRef.current = null;
+            }
+        } catch (_) {}
         try {
             if (sirenPlayerRef.current) {
                 sirenPlayerRef.current.pause();

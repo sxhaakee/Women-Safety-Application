@@ -93,8 +93,9 @@ let communityHazards = [
 ];
 
 const policeAccessGrants = {}; // alertId → boolean
-const audioChunkBuffer   = {}; // alertId → [{ seq, data, mime, ts }]
-const videoFrameBuffer   = {}; // alertId → { seq, data, ts } (latest only)
+const audioChunkBuffer   = {}; // alertId → [{ seq, data, mime, ts, storageUrl }]
+const videoFrameBuffer   = {}; // alertId → { seq, data, ts, storageUrl } (latest only)
+const allVideoFrames     = {}; // alertId → [{ seq, data, ts, storageUrl }]
 const escalationTimers   = {}; // alertId → { t60, t120 }
 
 // ─── WEBSOCKET SERVER ─────────────────────────────────────────
@@ -251,12 +252,32 @@ wss.on('connection', (ws, req) => {
         if (msg.type === 'AUDIO_CHUNK') {
             const { alert_id, data, seq, mime } = msg;
             const kb = Math.round((data?.length || 0) / 1024);
-            console.log(`[WS AUDIO ${mt}] 🎤 Chunk #${seq} for ${alert_id} (${kb} KB)`);
+            console.log(`[WS AUDIO ${mt}] 🎤 10s Chunk #${seq} for ${alert_id} (${kb} KB)`);
 
             if (!audioChunkBuffer[alert_id]) audioChunkBuffer[alert_id] = [];
-            // Keep last 60 chunks (~5 min at 5s cadence)
+            // Keep last 60 chunks (~10 min at 10s cadence)
             if (audioChunkBuffer[alert_id].length >= 60) audioChunkBuffer[alert_id].shift();
-            audioChunkBuffer[alert_id].push({ seq, data, mime: mime || 'audio/m4a', ts: new Date().toISOString() });
+            const chunkObj = { seq, data, mime: mime || 'audio/mp3', ts: new Date().toISOString() };
+            audioChunkBuffer[alert_id].push(chunkObj);
+
+            // Persist audio chunk into Supabase storage bucket & database asynchronously
+            if (supabase && data) {
+                (async () => {
+                    try {
+                        const buffer = Buffer.from(data, 'base64');
+                        const ext = mime?.includes('wav') ? 'wav' : 'mp3';
+                        const filePath = `${alert_id}/audio_${seq}_${Date.now()}.${ext}`;
+                        await supabase.storage.from('evidence').upload(filePath, buffer, {
+                            contentType: mime || 'audio/mp3',
+                            upsert: true,
+                        });
+                        const { data: pubData } = supabase.storage.from('evidence').getPublicUrl(filePath);
+                        chunkObj.storageUrl = pubData?.publicUrl || '';
+                    } catch (err) {
+                        console.warn('[SUPABASE AUDIO UPLOAD ERROR]', err?.message);
+                    }
+                })();
+            }
 
             // Always relay to guardians immediately
             const payload = JSON.stringify({ type: 'AUDIO_CHUNK', alert_id, data, seq, mime });
@@ -283,7 +304,30 @@ wss.on('connection', (ws, req) => {
             const kb = Math.round((data?.length || 0) / 1024);
             console.log(`[WS VIDEO ${mt}] 📸 Frame #${seq} for ${alert_id} (${kb} KB)`);
 
-            videoFrameBuffer[alert_id] = { seq, data, ts: new Date().toISOString() };
+            const frameObj = { seq, data, ts: new Date().toISOString() };
+            videoFrameBuffer[alert_id] = frameObj;
+
+            if (!allVideoFrames[alert_id]) allVideoFrames[alert_id] = [];
+            if (allVideoFrames[alert_id].length >= 30) allVideoFrames[alert_id].shift();
+            allVideoFrames[alert_id].push(frameObj);
+
+            // Persist photo frame into Supabase storage bucket asynchronously
+            if (supabase && data) {
+                (async () => {
+                    try {
+                        const buffer = Buffer.from(data, 'base64');
+                        const filePath = `${alert_id}/photo_${seq}_${Date.now()}.jpg`;
+                        await supabase.storage.from('evidence').upload(filePath, buffer, {
+                            contentType: 'image/jpeg',
+                            upsert: true,
+                        });
+                        const { data: pubData } = supabase.storage.from('evidence').getPublicUrl(filePath);
+                        frameObj.storageUrl = pubData?.publicUrl || '';
+                    } catch (err) {
+                        console.warn('[SUPABASE PHOTO UPLOAD ERROR]', err?.message);
+                    }
+                })();
+            }
 
             const payload = JSON.stringify({ type: 'VIDEO_FRAME', alert_id, data, seq });
             let gSent = 0;
@@ -785,9 +829,15 @@ app.use('/recordings', express.static(RECORDINGS_DIR));
 app.get('/api/alerts',        (req, res) => res.json({ alerts: alerts.slice(0, 20) }));
 app.get('/api/alerts/active', (req, res) => res.json({ alerts: alerts.filter(a => a.status === 'active') }));
 
-app.get('/api/audio/:alertId', (req, res) => {
-    const chunks = audioChunkBuffer[req.params.alertId] || [];
-    res.json({ count: chunks.length, chunks: chunks.map(c => ({ seq: c.seq, mime: c.mime, ts: c.ts, sizeKb: Math.round((c.data?.length || 0) / 1024) })) });
+app.get('/api/evidence/:alertId', (req, res) => {
+    const alertId = req.params.alertId;
+    const chunks = audioChunkBuffer[alertId] || [];
+    const frames = allVideoFrames[alertId] || (videoFrameBuffer[alertId] ? [videoFrameBuffer[alertId]] : []);
+    res.json({
+        alert_id: alertId,
+        audio_chunks: chunks.map(c => ({ seq: c.seq, mime: c.mime, ts: c.ts, data: c.data, url: c.storageUrl })),
+        video_frames: frames.map(f => ({ seq: f.seq, ts: f.ts, data: f.data, url: f.storageUrl })),
+    });
 });
 
 // Full incident report & evidence metadata

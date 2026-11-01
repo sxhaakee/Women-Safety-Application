@@ -12,6 +12,7 @@ import { Colors, Spacing, FontSizes, BorderRadius } from '../theme';
 import {
     SheSafeUser, SheSafeAlert, SheSafeWS,
     getActiveAlerts, getAllAlerts,
+    BACKEND_URL,
 } from '../utils/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { generateAndShareEvidencePDF } from '../utils/evidencePdf';
@@ -392,14 +393,30 @@ export default function PoliceDashboard({ navigation, route }: any) {
     const exportAlertPDF = async (targetAlert: SheSafeAlert) => {
         setIsSaving(true);
         try {
-            const allFrames = videoFramesRef.current.map(f => f.data);
+            // Fetch all stored frames & audio from server evidence store
+            let allFrames = videoFramesRef.current.map(f => f.data);
+            let audCount = audioChunksRef.current.length;
+
+            try {
+                const res = await fetch(`${BACKEND_URL}/api/evidence/${targetAlert.id}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.video_frames && data.video_frames.length > 0) {
+                        allFrames = data.video_frames.map((f: any) => f.data);
+                    }
+                    if (data.audio_chunks && data.audio_chunks.length > 0) {
+                        audCount = data.audio_chunks.length;
+                    }
+                }
+            } catch (_) {}
+
             const latestFrame = allFrames.length > 0 ? allFrames[allFrames.length - 1] : liveVideoFrame;
 
             await generateAndShareEvidencePDF({
                 alert: targetAlert,
                 frameBase64: latestFrame,
                 framesBase64: allFrames,
-                audioChunkCount: audioChunksRef.current.length || (targetAlert.status === 'resolved' ? 8 : 0),
+                audioChunkCount: audCount || (targetAlert.status === 'resolved' ? 8 : 0),
                 officerName: user.name || 'Officer Rajesh Kumar',
                 stationName: 'Mangaluru Central Police Station',
             });
@@ -407,6 +424,39 @@ export default function PoliceDashboard({ navigation, route }: any) {
             Alert.alert('PDF Export Error', e?.message || 'Could not compile evidence PDF.');
         } finally {
             setIsSaving(false);
+        }
+    };
+
+    const downloadIncidentEvidence = async (targetAlert: SheSafeAlert) => {
+        try {
+            const res = await fetch(`${BACKEND_URL}/api/evidence/${targetAlert.id}`);
+            if (res.ok) {
+                const data = await res.json();
+                let dlCount = 0;
+                // Auto-download all audio chunks for this incident
+                if (data.audio_chunks && data.audio_chunks.length > 0) {
+                    data.audio_chunks.forEach((c: any) => {
+                        if (c.data) {
+                            triggerBrowserDownload(`data:audio/mp3;base64,${c.data}`, `SheSafe_${targetAlert.id}_Audio_${c.seq}.mp3`);
+                            dlCount++;
+                        }
+                    });
+                }
+                // Auto-download all photo frames for this incident
+                if (data.video_frames && data.video_frames.length > 0) {
+                    data.video_frames.forEach((f: any) => {
+                        if (f.data) {
+                            triggerBrowserDownload(`data:image/jpeg;base64,${f.data}`, `SheSafe_${targetAlert.id}_Photo_${f.seq}.jpg`);
+                            dlCount++;
+                        }
+                    });
+                }
+                Alert.alert('📥 Evidence Downloaded', `Successfully triggered download for ${dlCount} media files from incident ${targetAlert.id}.`);
+            } else {
+                Alert.alert('Evidence Notice', 'No additional raw recordings stored for this incident.');
+            }
+        } catch (e: any) {
+            Alert.alert('Download Error', e?.message || 'Could not download incident files.');
         }
     };
 
@@ -858,12 +908,20 @@ export default function PoliceDashboard({ navigation, route }: any) {
                                             {a.status.toUpperCase()}
                                         </Text>
                                     </View>
-                                    <TouchableOpacity
-                                        style={styles.histPdfBtn}
-                                        onPress={() => exportAlertPDF(a)}
-                                    >
-                                        <Text style={styles.histPdfBtnText}>📄 PDF Report</Text>
-                                    </TouchableOpacity>
+                                    <View style={{ flexDirection: 'row', gap: 6 }}>
+                                        <TouchableOpacity
+                                            style={styles.histPdfBtn}
+                                            onPress={() => exportAlertPDF(a)}
+                                        >
+                                            <Text style={styles.histPdfBtnText}>📄 PDF Report</Text>
+                                        </TouchableOpacity>
+                                        <TouchableOpacity
+                                            style={[styles.histPdfBtn, { backgroundColor: '#F0FDF4', borderColor: '#86EFAC' }]}
+                                            onPress={() => downloadIncidentEvidence(a)}
+                                        >
+                                            <Text style={[styles.histPdfBtnText, { color: '#16A34A' }]}>💾 Download Evidence</Text>
+                                        </TouchableOpacity>
+                                    </View>
                                 </View>
                             </View>
                         ))}
