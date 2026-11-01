@@ -23,47 +23,47 @@ const { width } = Dimensions.get('window');
 
 const ROLE_CONFIG = {
     victim: {
-        label: 'She / Her',
-        emoji: '🆘',
-        color: Colors.victim,
-        colorLight: Colors.victimLight,
-        bg: ['#2D0010', '#160008', '#080810'] as const,
-        desc: 'Send SOS · Record Evidence · Share Location',
+        label: 'Priya (User)',
+        emoji: '🌸',
+        color: '#E11D48',
+        colorLight: '#FB7185',
+        bg: ['#FFFFFF', '#FFF1F2', '#FDF2F8'] as const,
+        desc: 'Send SOS · Stream Evidence · Share Location',
     },
     guardian: {
         label: 'Guardian',
         emoji: '🛡️',
-        color: Colors.guardian,
-        colorLight: Colors.guardianLight,
-        bg: ['#130A30', '#09061A', '#080810'] as const,
+        color: '#7C3AED',
+        colorLight: '#A78BFA',
+        bg: ['#FFFFFF', '#F5F3FF', '#EDE9FE'] as const,
         desc: 'Monitor Alerts · Track Location · View Evidence',
     },
     police: {
-        label: 'Police',
+        label: 'Police / Dispatch',
         emoji: '👮',
-        color: Colors.police,
-        colorLight: Colors.policeLight,
-        bg: ['#081030', '#050A20', '#080810'] as const,
-        desc: 'Receive Alerts · Locate Her · Manage Cases',
+        color: '#2563EB',
+        colorLight: '#60A5FA',
+        bg: ['#FFFFFF', '#EFF6FF', '#DBEAFE'] as const,
+        desc: 'Receive Alerts · Rapid Response · Manage Cases',
     },
     volunteer: {
-        label: 'Volunteer / Rakshak',
+        label: 'Rakshak / Volunteer',
         emoji: '🤝',
         color: '#059669',
-        colorLight: '#10B981',
-        bg: ['#042F2E', '#022120', '#080810'] as const,
-        desc: 'Respond to Nearby SOS · First Responder · Community Patrol',
+        colorLight: '#34D399',
+        bg: ['#FFFFFF', '#ECFDF5', '#D1FAE5'] as const,
+        desc: 'Nearby First Responder · Community Patrol',
     },
 };
 
 const QUICK_FILL = [
-    { label: 'She / Her', user: 'victim@demo.shesafe',   pass: 'DemoOnly2024!', role: 'victim'   },
-    { label: 'Guardian',  user: 'guardian@demo.shesafe', pass: 'DemoOnly2024!', role: 'guardian' },
-    { label: 'Police',    user: 'police@demo.shesafe',   pass: 'DemoOnly2024!', role: 'police'   },
-    { label: 'Volunteer', user: 'volunteer@demo.shesafe', pass: 'DemoOnly2024!', role: 'volunteer' },
+    { label: '🌸 Priya (User)', user: 'victim@demo.shesafe',    pass: 'DemoOnly2024!', role: 'victim'    },
+    { label: '🛡️ Guardian',    user: 'guardian@demo.shesafe',  pass: 'DemoOnly2024!', role: 'guardian'  },
+    { label: '👮 Police',      user: 'police@demo.shesafe',    pass: 'DemoOnly2024!', role: 'police'    },
+    { label: '🤝 Rakshak',     user: 'volunteer@demo.shesafe', pass: 'DemoOnly2024!', role: 'volunteer' },
 ];
 
-// ─── PIN SETUP STEP (victim sets their own code) ──────────────
+// ─── PIN SETUP STEP (User sets their private security code) ──────────────────
 
 function PinSetupStep({
     user,
@@ -87,7 +87,6 @@ function PinSetupStep({
     }, []);
 
     useEffect(() => {
-        // Also re-fade when moving to confirm stage
         Animated.timing(fadeAnim, { toValue: 0, duration: 150, useNativeDriver: true }).start(() => {
             Animated.timing(fadeAnim, { toValue: 1, duration: 300, useNativeDriver: true }).start();
         });
@@ -110,11 +109,9 @@ function PinSetupStep({
 
         if (next.length === 4) {
             if (stage === 'set') {
-                // Move to confirm stage
                 setFirstPin(next);
                 setTimeout(() => { setStage('confirm'); setInput(''); }, 150);
             } else {
-                // Confirm stage — check match
                 if (next === firstPin) {
                     onDone(next);
                 } else {
@@ -139,29 +136,33 @@ function PinSetupStep({
 
     return (
         <LinearGradient colors={cfg.bg as any} style={pinStyles.container}>
-            <StatusBar barStyle="light-content" />
+            <StatusBar barStyle="dark-content" />
             <Animated.View style={[pinStyles.content, { opacity: fadeAnim }]}>
 
-                <Text style={pinStyles.roleEmoji}>🔐</Text>
+                <View style={pinStyles.iconCircle}>
+                    <Text style={pinStyles.roleEmoji}>🔐</Text>
+                </View>
                 <Text style={pinStyles.welcome}>
-                    {stage === 'set' ? 'Set Your Safety Code' : 'Confirm Your Code'}
+                    {stage === 'set' ? 'Set Your Safety PIN' : 'Confirm Your PIN'}
                 </Text>
                 <Text style={pinStyles.subtitle}>
                     {stage === 'set'
-                        ? 'Choose a 4-digit code. You\'ll enter this\nto cancel an SOS alert countdown.'
-                        : 'Enter the same 4 digits again\nto confirm your code.'}
+                        ? 'Choose a 4-digit security PIN. You will enter this\nto cancel an emergency alert countdown.'
+                        : 'Enter the same 4 digits again\nto confirm your safety PIN.'}
                 </Text>
 
                 {/* PIN dots */}
                 <Animated.View style={[pinStyles.dotsRow, { transform: [{ translateX: shakeAnim }] }]}>
-                    {[0,1,2,3].map(i => (
-                        <LinearGradient
+                    {[0, 1, 2, 3].map(i => (
+                        <View
                             key={i}
-                            colors={input.length > i ? [cfg.color + '55', cfg.color + '22'] : ['rgba(255,255,255,0.08)', 'rgba(255,255,255,0.04)']}
-                            style={[pinStyles.dot, input.length > i && { borderColor: cfg.color }]}
+                            style={[
+                                pinStyles.dot,
+                                input.length > i && { borderColor: cfg.color, backgroundColor: '#FFF1F2' },
+                            ]}
                         >
                             {input.length > i && <Text style={[pinStyles.dotFilled, { color: cfg.color }]}>•</Text>}
-                        </LinearGradient>
+                        </View>
                     ))}
                 </Animated.View>
 
@@ -197,10 +198,10 @@ function PinSetupStep({
                 {/* Progress indicator */}
                 <View style={pinStyles.stepRow}>
                     <View style={[pinStyles.stepDot, { backgroundColor: cfg.color }]} />
-                    <View style={[pinStyles.stepDot, stage === 'confirm' ? { backgroundColor: cfg.color } : { backgroundColor: 'rgba(255,255,255,0.2)' }]} />
+                    <View style={[pinStyles.stepDot, stage === 'confirm' ? { backgroundColor: cfg.color } : { backgroundColor: '#CBD5E1' }]} />
                 </View>
                 <Text style={pinStyles.stepLabel}>
-                    {stage === 'set' ? 'Step 1 of 2 — Set code' : 'Step 2 of 2 — Confirm code'}
+                    {stage === 'set' ? 'Step 1 of 2 — Create PIN' : 'Step 2 of 2 — Confirm PIN'}
                 </Text>
 
             </Animated.View>
@@ -217,52 +218,72 @@ const pinStyles = StyleSheet.create({
         paddingHorizontal: Spacing.xl,
         gap: Spacing.sm,
     },
-    roleEmoji: { fontSize: 56 },
-    welcome: { fontSize: FontSizes.xxl, fontWeight: '900', color: Colors.text, textAlign: 'center' },
-    subtitle: { fontSize: FontSizes.sm, color: Colors.textSecondary, textAlign: 'center', lineHeight: 20 },
+    iconCircle: {
+        width: 72,
+        height: 72,
+        borderRadius: 36,
+        backgroundColor: '#FFF1F2',
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginBottom: 4,
+    },
+    roleEmoji: { fontSize: 36 },
+    welcome: { fontSize: FontSizes.xxl, fontWeight: '900', color: '#0F172A', textAlign: 'center' },
+    subtitle: { fontSize: FontSizes.sm, color: '#64748B', textAlign: 'center', lineHeight: 20 },
     dotsRow: { flexDirection: 'row', gap: Spacing.md, marginVertical: Spacing.md },
     dot: {
-        width: 64, height: 72, borderRadius: BorderRadius.md,
+        width: 60, height: 68, borderRadius: BorderRadius.md,
         alignItems: 'center', justifyContent: 'center',
-        borderWidth: 1.5, borderColor: Colors.border,
+        borderWidth: 1.5, borderColor: '#CBD5E1',
+        backgroundColor: '#FFFFFF',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.05,
+        shadowRadius: 4,
+        elevation: 2,
     },
     dotFilled: { fontSize: 32, fontWeight: '900' },
     errorBox: {
-        backgroundColor: 'rgba(239,68,68,0.12)',
+        backgroundColor: '#FEF2F2',
         borderRadius: BorderRadius.sm,
         paddingVertical: 6, paddingHorizontal: Spacing.md,
-        borderWidth: 1, borderColor: 'rgba(239,68,68,0.3)',
+        borderWidth: 1, borderColor: '#FECACA',
     },
-    errorText: { color: Colors.danger, fontSize: FontSizes.sm, fontWeight: '600' },
+    errorText: { color: '#DC2626', fontSize: FontSizes.sm, fontWeight: '600' },
     numpad: { width: '100%', gap: Spacing.sm },
     numpadRow: { flexDirection: 'row', gap: Spacing.sm, justifyContent: 'center' },
     numpadEmpty: { flex: 1, height: 54 },
     key: {
         flex: 1, height: 54, borderRadius: BorderRadius.md,
-        backgroundColor: 'rgba(255,255,255,0.09)',
+        backgroundColor: '#FFFFFF',
         alignItems: 'center', justifyContent: 'center',
-        borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
+        borderWidth: 1, borderColor: '#E2E8F0',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.04,
+        shadowRadius: 3,
+        elevation: 1,
     },
-    keyBack: { backgroundColor: 'rgba(239,68,68,0.1)', borderColor: 'rgba(239,68,68,0.2)' },
-    keyText: { fontSize: FontSizes.xl, color: Colors.text, fontWeight: '700' },
-    keyBackText: { fontSize: FontSizes.md, color: Colors.danger },
+    keyBack: { backgroundColor: '#FEE2E2', borderColor: '#FECDD3' },
+    keyText: { fontSize: FontSizes.xl, color: '#0F172A', fontWeight: '700' },
+    keyBackText: { fontSize: FontSizes.md, color: '#DC2626' },
     stepRow: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.md },
     stepDot: { width: 28, height: 4, borderRadius: 2 },
-    stepLabel: { fontSize: FontSizes.xs, color: Colors.textMuted, fontWeight: '600' },
+    stepLabel: { fontSize: FontSizes.xs, color: '#94A3B8', fontWeight: '600' },
 });
 
-// ─── MAIN LOGIN SCREEN ─────────────────────────────────────────
+// ─── MAIN LOGIN SCREEN ────────────────────────────────────────────────────────
 
 export default function LoginScreen({ navigation }: any) {
-    const [username, setUsername]   = useState('');
-    const [password, setPassword]   = useState('');
-    const [loading, setLoading]     = useState(false);
-    const [error, setError]         = useState('');
+    const [username, setUsername]         = useState('');
+    const [password, setPassword]         = useState('');
+    const [loading, setLoading]           = useState(false);
+    const [error, setError]               = useState('');
     const [detectedRole, setDetectedRole] = useState<string | null>(null);
-    const [loggedInUser, setLoggedInUser] = useState<SheSafeUser | null>(null); // PIN setup step (victim only)
+    const [loggedInUser, setLoggedInUser] = useState<SheSafeUser | null>(null);
 
     const fadeAnim    = useRef(new Animated.Value(0)).current;
-    const slideAnim   = useRef(new Animated.Value(50)).current;
+    const slideAnim   = useRef(new Animated.Value(40)).current;
     const shieldScale = useRef(new Animated.Value(1)).current;
     const errorShake  = useRef(new Animated.Value(0)).current;
 
@@ -271,17 +292,16 @@ export default function LoginScreen({ navigation }: any) {
             Animated.timing(fadeAnim,  { toValue: 1, duration: 700, useNativeDriver: true }),
             Animated.spring(slideAnim, { toValue: 0, tension: 55, friction: 10, useNativeDriver: true }),
         ]).start();
-        // Shield breathe
         Animated.loop(Animated.sequence([
-            Animated.timing(shieldScale, { toValue: 1.07, duration: 2000, useNativeDriver: true }),
-            Animated.timing(shieldScale, { toValue: 1,    duration: 2000, useNativeDriver: true }),
+            Animated.timing(shieldScale, { toValue: 1.05, duration: 2200, useNativeDriver: true }),
+            Animated.timing(shieldScale, { toValue: 1,    duration: 2200, useNativeDriver: true }),
         ])).start();
     }, []);
 
     useEffect(() => {
         const u = username.toLowerCase().trim();
         setDetectedRole(
-            u.includes('victim') ? 'victim' :
+            u.includes('victim') || u.includes('priya') || u.includes('she') ? 'victim' :
             u.includes('guardian') ? 'guardian' :
             u.includes('police') ? 'police' :
             u.includes('volunteer') || u.includes('rakshak') ? 'volunteer' : null
@@ -302,7 +322,7 @@ export default function LoginScreen({ navigation }: any) {
 
     const handleLogin = async () => {
         if (!username.trim() || !password.trim()) {
-            setError('Enter username and password');
+            setError('Please enter username and password');
             shakeError();
             return;
         }
@@ -311,13 +331,11 @@ export default function LoginScreen({ navigation }: any) {
         const user = await loginUser(username, password);
         setLoading(false);
         if (!user) {
-            setError('Wrong credentials. Try again.');
+            setError('Invalid credentials. Please try again.');
             shakeError();
             return;
         }
-        // Save session (without PIN yet — victim will set it next)
         await AsyncStorage.setItem('shesafe_current_user', JSON.stringify(user));
-        // Only victim sets a PIN — guardian/police/volunteer go straight to dashboard
         if (user.role === 'victim') {
             setLoggedInUser(user);
         } else {
@@ -331,17 +349,14 @@ export default function LoginScreen({ navigation }: any) {
             user.role === 'guardian'  ? 'GuardianDashboard' :
             user.role === 'police'    ? 'PoliceDashboard' :
                                         'VolunteerDashboard';
-        // Pass the user-set PIN through to the victim dashboard
         navigation.reset({ index: 0, routes: [{ name: route, params: { user: { ...user, pin: pin || '' } } }] });
     };
 
-    // ── PIN setup step (victim only) ───────────────────────────
     if (loggedInUser) {
         return (
             <PinSetupStep
                 user={loggedInUser}
                 onDone={async (pin) => {
-                    // Save PIN to AsyncStorage and storage service so all screens can read it
                     await AsyncStorage.setItem('shesafe_victim_pin', pin);
                     await AsyncStorage.setItem('shesafe_pin', pin);
                     await savePin(pin);
@@ -351,20 +366,19 @@ export default function LoginScreen({ navigation }: any) {
         );
     }
 
-    // ── Login form ─────────────────────────────────────────────
-    const bgColors = currentRole ? currentRole.bg : (['#0C0A1E', '#080810', '#080810'] as const);
+    const bgColors = currentRole ? currentRole.bg : (['#FFFFFF', '#F8FAFC', '#F1F5F9'] as const);
 
     return (
         <LinearGradient colors={bgColors as any} style={styles.container}>
-            <StatusBar barStyle="light-content" />
+            <StatusBar barStyle="dark-content" />
             <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.flex}>
                 <Animated.View style={[styles.content, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
 
-                    {/* Shield logo */}
+                    {/* Minimalist AI Logo */}
                     <Animated.View style={{ transform: [{ scale: shieldScale }] }}>
                         <View style={styles.logoContainer}>
                             <Image
-                                source={require('../../assets/logo.png')}
+                                source={require('../../assets/logo_minimal.jpg')}
                                 style={styles.logoImage}
                                 resizeMode="cover"
                             />
@@ -372,13 +386,13 @@ export default function LoginScreen({ navigation }: any) {
                     </Animated.View>
 
                     <Text style={styles.appName}>SheSafe</Text>
-                    <Text style={styles.tagline}>Your safety, always on</Text>
+                    <Text style={styles.tagline}>Intelligent Autonomous Personal Safety</Text>
 
-                    {/* Role detected badge */}
+                    {/* Role detected pill */}
                     {currentRole && (
-                        <View style={[styles.roleBadge, { borderColor: currentRole.color + '60' }]}>
+                        <View style={[styles.roleBadge, { borderColor: currentRole.color + '40', backgroundColor: '#FFFFFF' }]}>
                             <Text style={styles.roleBadgeEmoji}>{currentRole.emoji}</Text>
-                            <View>
+                            <View style={{ flex: 1 }}>
                                 <Text style={[styles.roleBadgeLabel, { color: currentRole.color }]}>
                                     Logging in as {currentRole.label}
                                 </Text>
@@ -387,19 +401,19 @@ export default function LoginScreen({ navigation }: any) {
                         </View>
                     )}
 
-                    {/* Form */}
+                    {/* Form Card */}
                     <Animated.View style={[styles.form, { transform: [{ translateX: errorShake }] }]}>
 
                         <View style={styles.inputWrap}>
                             <Text style={styles.inputLabel}>USERNAME</Text>
-                            <View style={[styles.inputBox, currentRole && { borderColor: currentRole.color + '70' }]}>
+                            <View style={[styles.inputBox, currentRole && { borderColor: currentRole.color + '50' }]}>
                                 <Text style={styles.inputIcon}>👤</Text>
                                 <TextInput
                                     style={styles.inputText}
                                     value={username}
                                     onChangeText={setUsername}
-                                    placeholder="she / guardian / police"
-                                    placeholderTextColor={Colors.textMuted}
+                                    placeholder="priya / guardian / police"
+                                    placeholderTextColor="#94A3B8"
                                     autoCapitalize="none"
                                     autoCorrect={false}
                                 />
@@ -408,14 +422,14 @@ export default function LoginScreen({ navigation }: any) {
 
                         <View style={styles.inputWrap}>
                             <Text style={styles.inputLabel}>PASSWORD</Text>
-                            <View style={[styles.inputBox, currentRole && { borderColor: currentRole.color + '70' }]}>
+                            <View style={[styles.inputBox, currentRole && { borderColor: currentRole.color + '50' }]}>
                                 <Text style={styles.inputIcon}>🔒</Text>
                                 <TextInput
                                     style={styles.inputText}
                                     value={password}
                                     onChangeText={setPassword}
                                     placeholder="shesafe"
-                                    placeholderTextColor={Colors.textMuted}
+                                    placeholderTextColor="#94A3B8"
                                     secureTextEntry
                                     onSubmitEditing={handleLogin}
                                 />
@@ -435,7 +449,7 @@ export default function LoginScreen({ navigation }: any) {
                             activeOpacity={0.85}
                         >
                             <LinearGradient
-                                colors={currentRole ? [currentRole.color, currentRole.colorLight] : [Colors.primary, Colors.primaryLight]}
+                                colors={currentRole ? [currentRole.color, currentRole.colorLight] : ['#E11D48', '#FB7185']}
                                 style={styles.loginBtnInner}
                                 start={{ x: 0, y: 0 }}
                                 end={{ x: 1, y: 0 }}
@@ -443,18 +457,18 @@ export default function LoginScreen({ navigation }: any) {
                                 {loading
                                     ? <ActivityIndicator color="#fff" size="small" />
                                     : <Text style={styles.loginBtnText}>
-                                        {currentRole ? `Login as ${currentRole.label}` : 'Login →'}
+                                        {currentRole ? `Enter as ${currentRole.label}` : 'Sign In →'}
                                       </Text>
                                 }
                             </LinearGradient>
                         </TouchableOpacity>
                     </Animated.View>
 
-                    {/* Quick fill */}
+                    {/* Quick fill buttons */}
                     <View style={styles.quickSection}>
                         <View style={styles.dividerRow}>
                             <View style={styles.divider} />
-                            <Text style={styles.dividerText}>QUICK DEMO LOGIN</Text>
+                            <Text style={styles.dividerText}>QUICK DEMO ACCESS</Text>
                             <View style={styles.divider} />
                         </View>
                         <View style={styles.quickBtns}>
@@ -463,7 +477,7 @@ export default function LoginScreen({ navigation }: any) {
                                 return (
                                     <TouchableOpacity
                                         key={q.role}
-                                        style={[styles.quickBtn, { borderColor: cfg.color + '55' }]}
+                                        style={[styles.quickBtn, { borderColor: cfg.color + '35' }]}
                                         onPress={() => { setUsername(q.user); setPassword(q.pass); setError(''); }}
                                     >
                                         <Text style={styles.quickEmoji}>{cfg.emoji}</Text>
@@ -472,10 +486,10 @@ export default function LoginScreen({ navigation }: any) {
                                 );
                             })}
                         </View>
-                    <Text style={styles.credHint}>
-                            Password: <Text style={{ color: Colors.textSecondary, fontWeight: '700' }}>shesafe</Text>
+                        <Text style={styles.credHint}>
+                            Demo Password: <Text style={{ color: '#0F172A', fontWeight: '700' }}>shesafe</Text>
                             {'  ·  '}
-                            Victim gets a safety PIN to cancel SOS
+                            User receives a private Security PIN to disarm SOS
                         </Text>
                     </View>
 
@@ -497,105 +511,114 @@ const styles = StyleSheet.create({
         gap: Spacing.md,
     },
     logoContainer: {
-        width: 96,
-        height: 96,
-        borderRadius: 28,
+        width: 88,
+        height: 88,
+        borderRadius: 24,
         overflow: 'hidden',
-        shadowColor: Colors.primary,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.6,
-        shadowRadius: 24,
-        elevation: 16,
+        shadowColor: '#E11D48',
+        shadowOffset: { width: 0, height: 6 },
+        shadowOpacity: 0.25,
+        shadowRadius: 16,
+        elevation: 8,
         borderWidth: 2,
-        borderColor: 'rgba(255,255,255,0.2)',
-        backgroundColor: '#0F172A',
+        borderColor: '#FFFFFF',
+        backgroundColor: '#FFFFFF',
     },
     logoImage: {
         width: '100%',
         height: '100%',
     },
-    logoGradient: {
-        width: 92,
-        height: 92,
-        borderRadius: 26,
-        alignItems: 'center',
-        justifyContent: 'center',
-        shadowColor: Colors.primary,
-        shadowOffset: { width: 0, height: 8 },
-        shadowOpacity: 0.6,
-        shadowRadius: 24,
-        elevation: 16,
-    },
-    logoEmoji: { fontSize: 42 },
-    appName: { fontSize: 34, fontWeight: '900', color: Colors.text, letterSpacing: 3 },
-    tagline: { fontSize: FontSizes.sm, color: Colors.textSecondary, letterSpacing: 1, marginTop: -Spacing.sm },
+    appName: { fontSize: 32, fontWeight: '900', color: '#0F172A', letterSpacing: 2 },
+    tagline: { fontSize: FontSizes.sm, color: '#64748B', letterSpacing: 0.5, marginTop: -Spacing.sm, fontWeight: '500' },
     roleBadge: {
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: 'rgba(255,255,255,0.06)',
-        borderRadius: BorderRadius.md,
+        borderRadius: BorderRadius.lg,
         padding: Spacing.md,
-        borderWidth: 1,
+        borderWidth: 1.5,
         gap: Spacing.sm,
         width: '100%',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.05,
+        shadowRadius: 6,
+        elevation: 2,
     },
-    roleBadgeEmoji: { fontSize: 26 },
-    roleBadgeLabel: { fontSize: FontSizes.md, fontWeight: '700' },
-    roleBadgeDesc: { fontSize: FontSizes.xs, color: Colors.textSecondary, marginTop: 2 },
-    form: { width: '100%', gap: Spacing.sm },
+    roleBadgeEmoji: { fontSize: 28 },
+    roleBadgeLabel: { fontSize: FontSizes.md, fontWeight: '800' },
+    roleBadgeDesc: { fontSize: FontSizes.xs, color: '#64748B', marginTop: 2 },
+    form: {
+        width: '100%',
+        gap: Spacing.sm,
+        backgroundColor: '#FFFFFF',
+        borderRadius: BorderRadius.xl,
+        padding: Spacing.lg,
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.05,
+        shadowRadius: 12,
+        elevation: 3,
+    },
     inputWrap: { gap: 6 },
-    inputLabel: { fontSize: FontSizes.xs, color: Colors.textMuted, fontWeight: '700', letterSpacing: 1.5 },
+    inputLabel: { fontSize: FontSizes.xs, color: '#64748B', fontWeight: '800', letterSpacing: 1 },
     inputBox: {
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: 'rgba(255,255,255,0.07)',
+        backgroundColor: '#F8FAFC',
         borderRadius: BorderRadius.md,
-        borderWidth: 1,
-        borderColor: Colors.border,
+        borderWidth: 1.5,
+        borderColor: '#E2E8F0',
         paddingHorizontal: Spacing.md,
         height: 52,
         gap: Spacing.sm,
     },
     inputIcon: { fontSize: 18 },
-    inputText: { flex: 1, color: Colors.text, fontSize: FontSizes.md },
+    inputText: { flex: 1, color: '#0F172A', fontSize: FontSizes.md, fontWeight: '500' },
     errorBox: {
-        backgroundColor: 'rgba(239,68,68,0.12)',
+        backgroundColor: '#FEF2F2',
         borderRadius: BorderRadius.sm,
         padding: Spacing.sm + 2,
         borderWidth: 1,
-        borderColor: 'rgba(239,68,68,0.3)',
+        borderColor: '#FECACA',
     },
-    errorText: { color: '#EF4444', fontSize: FontSizes.sm, fontWeight: '600' },
+    errorText: { color: '#DC2626', fontSize: FontSizes.sm, fontWeight: '600' },
     loginBtn: {
         borderRadius: BorderRadius.md,
         overflow: 'hidden',
-        shadowColor: Colors.primary,
+        shadowColor: '#E11D48',
         shadowOffset: { width: 0, height: 6 },
-        shadowOpacity: 0.4,
-        shadowRadius: 16,
-        elevation: 8,
+        shadowOpacity: 0.35,
+        shadowRadius: 12,
+        elevation: 6,
         marginTop: Spacing.xs,
     },
     loginBtnInner: {
-        paddingVertical: Spacing.md + 4,
+        paddingVertical: Spacing.md + 2,
         alignItems: 'center',
     },
-    loginBtnText: { color: Colors.white, fontSize: FontSizes.lg, fontWeight: '800' },
+    loginBtnText: { color: '#FFFFFF', fontSize: FontSizes.lg, fontWeight: '800', letterSpacing: 0.5 },
     quickSection: { width: '100%', marginTop: Spacing.sm },
     dividerRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginBottom: Spacing.sm },
-    divider: { flex: 1, height: 1, backgroundColor: Colors.border },
-    dividerText: { fontSize: FontSizes.xs, color: Colors.textMuted, fontWeight: '700', letterSpacing: 1 },
+    divider: { flex: 1, height: 1, backgroundColor: '#E2E8F0' },
+    dividerText: { fontSize: FontSizes.xs, color: '#94A3B8', fontWeight: '800', letterSpacing: 1 },
     quickBtns: { flexDirection: 'row', gap: Spacing.sm },
     quickBtn: {
         flex: 1,
         alignItems: 'center',
-        backgroundColor: 'rgba(255,255,255,0.05)',
-        borderRadius: BorderRadius.sm,
+        backgroundColor: '#FFFFFF',
+        borderRadius: BorderRadius.md,
         paddingVertical: Spacing.sm + 4,
-        borderWidth: 1,
+        borderWidth: 1.5,
         gap: 4,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.04,
+        shadowRadius: 3,
+        elevation: 1,
     },
-    quickEmoji: { fontSize: 22 },
-    quickLabel: { fontSize: FontSizes.xs, fontWeight: '700' },
-    credHint: { textAlign: 'center', color: Colors.textMuted, fontSize: FontSizes.xs, marginTop: Spacing.sm },
+    quickEmoji: { fontSize: 20 },
+    quickLabel: { fontSize: 11, fontWeight: '700' },
+    credHint: { textAlign: 'center', color: '#94A3B8', fontSize: FontSizes.xs, marginTop: Spacing.sm },
 });

@@ -273,7 +273,7 @@ export async function generateAndShareEvidencePDF({
     <div class="complaint-box">
       "To: The Station House Officer, ${stationName}.<br /><br />
       I hereby submit this verifiable evidentiary log automatically recorded by the SheSafe Women's Safety System on <strong>${alertDate}</strong> at location coordinates <strong>${coordsStr}</strong> (${alert.address || 'Mangaluru Central'}).<br /><br />
-      The victim, <strong>${alert.victim_name}</strong>, triggered an emergency distress signal which immediately began streaming encrypted front-camera visuals and live ambient audio to authorized guardians and the Police Control Room.<br /><br />
+      The protected member, <strong>${alert.victim_name}</strong>, triggered an emergency distress signal which immediately began streaming encrypted front-camera visuals and live ambient audio to authorized guardians and the Police Control Room.<br /><br />
       Kindly register this complaint for necessary legal action under relevant sections of the law."
     </div>
   </div>

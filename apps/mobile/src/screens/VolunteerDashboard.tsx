@@ -284,7 +284,7 @@ export default function VolunteerDashboard({ navigation, route }: any) {
                                 </View>
                                 <View style={{ flex: 1 }}>
                                     <Text style={styles.victimName}>
-                                        {activeAlert.victim_name?.split(' ')[0]} (Victim)
+                                        {activeAlert.victim_name?.split(' ')[0]} (Protected Member)
                                     </Text>
                                     <Text style={styles.victimArea}>
                                         {activeAlert.address || 'Near Mangaluru Central'}

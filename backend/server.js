@@ -337,10 +337,14 @@ wss.on('connection', (ws, req) => {
                 (async () => {
                     try {
                         const buffer = Buffer.from(data, 'base64');
-                        const ext = mime?.includes('wav') ? 'wav' : 'mp3';
+                        let ext = 'wav';
+                        if (mime?.includes('wav')) ext = 'wav';
+                        else if (mime?.includes('m4a') || mime?.includes('mp4') || mime?.includes('aac')) ext = 'm4a';
+                        else if (mime?.includes('webm')) ext = 'webm';
+                        else if (mime?.includes('mp3')) ext = 'mp3';
                         const filePath = `${alert_id}/audio_${seq}_${Date.now()}.${ext}`;
                         await supabase.storage.from('evidence').upload(filePath, buffer, {
-                            contentType: mime || 'audio/mp3',
+                            contentType: mime || (ext === 'wav' ? 'audio/wav' : ext === 'm4a' ? 'audio/m4a' : 'audio/mp3'),
                             upsert: true,
                         });
                         const { data: pubData } = supabase.storage.from('evidence').getPublicUrl(filePath);
@@ -962,7 +966,11 @@ app.post('/api/recording/save', async (req, res) => {
     const { alert_id, audio_b64, mime_type } = req.body;
     if (!alert_id || !audio_b64) return res.status(400).json({ error: 'alert_id and audio_b64 required' });
     try {
-        const ext = (mime_type && mime_type.includes('wav')) ? 'wav' : 'mp3';
+        let ext = 'wav';
+        if (mime_type?.includes('wav')) ext = 'wav';
+        else if (mime_type?.includes('m4a') || mime_type?.includes('mp4') || mime_type?.includes('aac')) ext = 'm4a';
+        else if (mime_type?.includes('webm')) ext = 'webm';
+        else if (mime_type?.includes('mp3')) ext = 'mp3';
         const filename = `recording_${alert_id}_${Date.now()}.${ext}`;
         const filepath = path.join(RECORDINGS_DIR, filename);
         const buffer = Buffer.from(audio_b64, 'base64');
@@ -973,7 +981,7 @@ app.post('/api/recording/save', async (req, res) => {
         const chunkObj = {
             seq: audioChunkBuffer[alert_id].length,
             data: audio_b64,
-            mime: mime_type || (ext === 'wav' ? 'audio/wav' : 'audio/mp3'),
+            mime: mime_type || (ext === 'wav' ? 'audio/wav' : ext === 'm4a' ? 'audio/m4a' : 'audio/mp3'),
             ts: new Date().toISOString(),
             storageUrl: fileUrl,
         };
@@ -984,7 +992,7 @@ app.post('/api/recording/save', async (req, res) => {
             try {
                 const sbPath = `${alert_id}/audio_${chunkObj.seq}_${Date.now()}.${ext}`;
                 await supabase.storage.from('evidence').upload(sbPath, buffer, {
-                    contentType: mime_type || (ext === 'wav' ? 'audio/wav' : 'audio/mp3'),
+                    contentType: mime_type || (ext === 'wav' ? 'audio/wav' : ext === 'm4a' ? 'audio/m4a' : 'audio/mp3'),
                     upsert: true,
                 });
                 const { data: pubData } = supabase.storage.from('evidence').getPublicUrl(sbPath);

@@ -16,6 +16,7 @@ import {
 } from '../utils/api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { generateAndShareEvidencePDF } from '../utils/evidencePdf';
+import { supabase } from '../utils/supabase';
 
 async function saveOrShareFile(dataUriOrBase64: string, filename: string, mimeType: string, isUrl = false, shouldShare = true): Promise<boolean> {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
@@ -49,8 +50,9 @@ async function saveOrShareFile(dataUriOrBase64: string, filename: string, mimeTy
         }
     } else {
         try {
-            const baseDir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
-            const targetUri = `${baseDir}${filename}`;
+            const baseDir = FileSystem.cacheDirectory || FileSystem.documentDirectory || '';
+            const sep = baseDir.endsWith('/') ? '' : '/';
+            const targetUri = `${baseDir}${sep}${filename}`;
             if (isUrl) {
                 await FileSystem.downloadAsync(dataUriOrBase64, targetUri);
             } else {
@@ -113,10 +115,21 @@ export default function PoliceDashboard({ navigation, route }: any) {
         loadAlerts();
         connectWS();
         const poll = setInterval(loadAlerts, 3000);
+
+        // Supabase Realtime alerts subscription for instantaneous sync
+        const channel = supabase
+            .channel('police_alerts_realtime')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'alerts' }, (payload) => {
+                console.log('[POLICE REALTIME SYNC] 🔄 Alert updated in Supabase:', payload.eventType);
+                loadAlerts();
+            })
+            .subscribe();
+
         return () => {
             clearInterval(clk);
             clearInterval(poll);
             clearInterval(elapsedRef.current);
+            supabase.removeChannel(channel);
             wsRef.current?.disconnect();
             soundRef.current?.remove();
         };
@@ -405,12 +418,12 @@ export default function PoliceDashboard({ navigation, route }: any) {
         });
         Alert.alert(
             '🚔 Patrol Dispatched',
-            `Patrol unit acknowledged emergency for ${activeAlert.victim_name}. ETA transmitted as 3 minutes to victim and guardians.`
+            `Patrol unit acknowledged emergency for ${activeAlert.victim_name}. ETA transmitted as 3 minutes to ${activeAlert.victim_name} and guardians.`
         );
     };
 
     const openGoogleMaps = (lat: number, lng: number, name?: string) => {
-        const label = encodeURIComponent(name || 'Victim Incident Location');
+        const label = encodeURIComponent(name || 'Incident Scene Location');
         const url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&destination_place_id=${label}`;
         Linking.openURL(url).catch(() =>
             Linking.openURL(`geo:${lat},${lng}?q=${lat},${lng}(${label})`)
@@ -431,21 +444,44 @@ export default function PoliceDashboard({ navigation, route }: any) {
             let allFrames: string[] = [];
             let audCount = 0;
 
+            // 1. Direct query to Supabase Storage bucket `evidence`
             try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 4000);
-                const res = await fetch(`${BACKEND_URL}/api/evidence/${targetAlert.id}`, { signal: controller.signal });
-                clearTimeout(timeoutId);
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data.video_frames && data.video_frames.length > 0) {
-                        allFrames = data.video_frames.map((f: any) => f.url || f.data).filter(Boolean);
-                    }
-                    if (data.audio_chunks && data.audio_chunks.length > 0) {
-                        audCount = data.audio_chunks.length;
+                const { data: sbFiles, error: sbErr } = await supabase.storage.from('evidence').list(targetAlert.id);
+                if (!sbErr && Array.isArray(sbFiles) && sbFiles.length > 0) {
+                    for (const file of sbFiles) {
+                        const { data: pubData } = supabase.storage.from('evidence').getPublicUrl(`${targetAlert.id}/${file.name}`);
+                        if (pubData?.publicUrl) {
+                            const nameLower = file.name.toLowerCase();
+                            if (nameLower.startsWith('photo_') || nameLower.endsWith('.jpg') || nameLower.endsWith('.jpeg') || nameLower.endsWith('.png')) {
+                                allFrames.push(pubData.publicUrl);
+                            } else if (nameLower.startsWith('audio_') || nameLower.endsWith('.wav') || nameLower.endsWith('.m4a') || nameLower.endsWith('.mp3')) {
+                                audCount++;
+                            }
+                        }
                     }
                 }
-            } catch (_) {}
+            } catch (sbErr) {
+                console.warn('[SUPABASE DIRECT POLICE PDF EVIDENCE ERROR]', sbErr);
+            }
+
+            // 2. Local backend fallback
+            if (allFrames.length === 0) {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 3000);
+                    const res = await fetch(`${BACKEND_URL}/api/evidence/${targetAlert.id}`, { signal: controller.signal });
+                    clearTimeout(timeoutId);
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data.video_frames && data.video_frames.length > 0) {
+                            allFrames = data.video_frames.map((f: any) => f.url || f.data).filter(Boolean);
+                        }
+                        if (data.audio_chunks && data.audio_chunks.length > 0) {
+                            audCount = data.audio_chunks.length;
+                        }
+                    }
+                } catch (_) {}
+            }
 
             if (allFrames.length === 0 && videoFramesRef.current.length > 0) {
                 allFrames = videoFramesRef.current.map(f => f.data).filter(Boolean);
@@ -473,37 +509,79 @@ export default function PoliceDashboard({ navigation, route }: any) {
 
     const downloadIncidentEvidence = async (targetAlert: SheSafeAlert) => {
         try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 4000);
             let dlCount = 0;
-            let data: any = null;
+            const audioList: any[] = [];
+            const photoList: any[] = [];
 
+            // 1. Direct query to Supabase Storage bucket `evidence` for all stored media files
             try {
-                const res = await fetch(`${BACKEND_URL}/api/evidence/${targetAlert.id}`, { signal: controller.signal });
-                clearTimeout(timeoutId);
-                if (res.ok) {
-                    data = await res.json();
+                const { data: sbFiles, error: sbErr } = await supabase.storage.from('evidence').list(targetAlert.id);
+                if (!sbErr && Array.isArray(sbFiles) && sbFiles.length > 0) {
+                    for (const file of sbFiles) {
+                        const { data: pubData } = supabase.storage.from('evidence').getPublicUrl(`${targetAlert.id}/${file.name}`);
+                        if (pubData?.publicUrl) {
+                            const nameLower = file.name.toLowerCase();
+                            if (nameLower.startsWith('audio_') || nameLower.endsWith('.wav') || nameLower.endsWith('.m4a') || nameLower.endsWith('.webm') || nameLower.endsWith('.mp3')) {
+                                const ext = nameLower.split('.').pop() || 'wav';
+                                const mime = ext === 'wav' ? 'audio/wav' : ext === 'm4a' ? 'audio/m4a' : ext === 'webm' ? 'audio/webm' : 'audio/mp3';
+                                audioList.push({ url: pubData.publicUrl, mime, name: file.name, ext });
+                            } else if (nameLower.startsWith('photo_') || nameLower.endsWith('.jpg') || nameLower.endsWith('.jpeg') || nameLower.endsWith('.png')) {
+                                photoList.push({ url: pubData.publicUrl, mime: 'image/jpeg', name: file.name });
+                            }
+                        }
+                    }
                 }
-            } catch (_) {}
+            } catch (sbErr) {
+                console.warn('[SUPABASE DIRECT POLICE EVIDENCE LIST ERROR]', sbErr);
+            }
 
-            const audioList: any[] = data?.audio_chunks || [];
-            const photoList: any[] = data?.video_frames || [];
+            // 2. Fallback or augment with local backend endpoint
+            if (audioList.length === 0 || photoList.length === 0) {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 3000);
+                    const res = await fetch(`${BACKEND_URL}/api/evidence/${targetAlert.id}`, { signal: controller.signal });
+                    clearTimeout(timeoutId);
+                    if (res.ok) {
+                        const bData = await res.json();
+                        if (Array.isArray(bData?.audio_chunks)) {
+                            bData.audio_chunks.forEach((c: any) => {
+                                if (c.url || c.data) audioList.push(c);
+                            });
+                        }
+                        if (Array.isArray(bData?.video_frames)) {
+                            bData.video_frames.forEach((f: any) => {
+                                if (f.url || f.data) photoList.push(f);
+                            });
+                        }
+                    }
+                } catch (_) {}
+            }
 
-            // 1. Download primary full 10-second audio recording
+            // 3. Fallback to active in-memory session frames/audio if storage empty
+            if (audioList.length === 0 && audioChunksRef.current.length > 0) {
+                audioList.push(...audioChunksRef.current);
+            }
+            if (photoList.length === 0 && videoFramesRef.current.length > 0) {
+                photoList.push(...videoFramesRef.current);
+            }
+
+            // 4. Download 10-second audio recording with TRUE extension (wav, m4a, webm)
             if (audioList.length > 0) {
                 const primaryAudio = audioList[audioList.length - 1] || audioList[0];
-                const ext = primaryAudio.mime?.includes('wav') ? 'wav' : 'mp3';
+                const ext = primaryAudio.ext || (primaryAudio.mime?.includes('wav') ? 'wav' : primaryAudio.mime?.includes('m4a') ? 'm4a' : primaryAudio.mime?.includes('webm') ? 'webm' : 'wav');
                 const filename = `SheSafe_${targetAlert.id.slice(0, 8)}_10s_Audio.${ext}`;
+                const mime = primaryAudio.mime || (ext === 'wav' ? 'audio/wav' : ext === 'm4a' ? 'audio/m4a' : 'audio/wav');
                 if (primaryAudio.url) {
-                    await saveOrShareFile(primaryAudio.url, filename, primaryAudio.mime || 'audio/wav', true, true);
+                    await saveOrShareFile(primaryAudio.url, filename, mime, true, true);
                     dlCount++;
                 } else if (primaryAudio.data) {
-                    await saveOrShareFile(primaryAudio.data, filename, primaryAudio.mime || 'audio/wav', false, true);
+                    await saveOrShareFile(primaryAudio.data, filename, mime, false, true);
                     dlCount++;
                 }
             }
 
-            // 2. Download primary evidence photo frame
+            // 5. Download primary evidence photo frame
             if (photoList.length > 0) {
                 const primaryPhoto = photoList[photoList.length - 1] || photoList[0];
                 const filename = `SheSafe_${targetAlert.id.slice(0, 8)}_Photo.jpg`;
@@ -516,26 +594,10 @@ export default function PoliceDashboard({ navigation, route }: any) {
                 }
             }
 
-            // 3. Fallback to active in-memory session frames/audio if server buffer empty
-            if (dlCount === 0) {
-                const memAudio = audioChunksRef.current;
-                const memFrames = videoFramesRef.current;
-                if (memAudio.length > 0) {
-                    const primaryAudio = memAudio[memAudio.length - 1] || memAudio[0];
-                    await saveOrShareFile(primaryAudio.data, `SheSafe_${targetAlert.id.slice(0, 8)}_10s_Audio.wav`, 'audio/wav', false, true);
-                    dlCount++;
-                }
-                if (memFrames.length > 0) {
-                    const primaryFrame = memFrames[memFrames.length - 1] || memFrames[0];
-                    await saveOrShareFile(primaryFrame.data, `SheSafe_${targetAlert.id.slice(0, 8)}_Photo.jpg`, 'image/jpeg', false, Platform.OS === 'web');
-                    dlCount++;
-                }
-            }
-
             if (dlCount > 0) {
-                Alert.alert('📥 Evidence Downloaded', `Successfully prepared 10s audio & photo evidence files for incident ${targetAlert.id.slice(0, 8)}.`);
+                Alert.alert('📥 Evidence Downloaded', `Successfully downloaded 10s audio recording and photographic evidence for incident ${targetAlert.id.slice(0, 8)} from Supabase.`);
             } else {
-                Alert.alert('Evidence Notice', 'No raw media files found for this incident.');
+                Alert.alert('Evidence Notice', 'No raw media files found for this incident in Supabase.');
             }
         } catch (e: any) {
             Alert.alert('Download Error', e?.message || 'Could not download incident files.');
@@ -545,7 +607,7 @@ export default function PoliceDashboard({ navigation, route }: any) {
     const exportAudio = async () => {
         const chunks = audioChunksRef.current;
         if (chunks.length === 0) {
-            Alert.alert('No Audio Yet', 'Waiting for live audio chunks to arrive from victim device.');
+            Alert.alert('No Audio Yet', 'Waiting for live audio chunks to arrive from user device.');
             return;
         }
         setIsSaving(true);
@@ -576,7 +638,7 @@ export default function PoliceDashboard({ navigation, route }: any) {
         const frames = videoFramesRef.current;
         const photoData = frames.length > 0 ? frames[frames.length - 1]!.data : liveVideoFrame;
         if (!photoData) {
-            Alert.alert('No Photo Yet', 'Waiting for front-camera frames to arrive from victim device.');
+            Alert.alert('No Photo Yet', 'Waiting for front-camera frames to arrive from user device.');
             return;
         }
         setIsSaving(true);
@@ -724,7 +786,7 @@ export default function PoliceDashboard({ navigation, route }: any) {
                                             onPress={() => Linking.openURL(`tel:${activeAlert.victim_phone || '112'}`)}
                                             activeOpacity={0.85}
                                         >
-                                            <Text style={styles.callVictimText}>📞 Call Victim Immediately</Text>
+                                            <Text style={styles.callVictimText}>📞 Call {activeAlert.victim_name || 'Member'} Immediately</Text>
                                         </TouchableOpacity>
                                     </View>
 
@@ -784,7 +846,7 @@ export default function PoliceDashboard({ navigation, route }: any) {
                                         <View style={styles.locFallback}>
                                             <Text style={{ fontSize: 24 }}>📍</Text>
                                             <View style={{ flex: 1 }}>
-                                                <Text style={styles.locFallbackLabel}>VICTIM LOCATION</Text>
+                                                <Text style={styles.locFallbackLabel}>INCIDENT LOCATION</Text>
                                                 <Text style={styles.locFallbackCoords}>{fmtCoords(activeAlert.lat, activeAlert.lng)}</Text>
                                                 <Text style={styles.addrText}>{activeAlert.address || 'Acquiring GPS fix...'}</Text>
                                             </View>

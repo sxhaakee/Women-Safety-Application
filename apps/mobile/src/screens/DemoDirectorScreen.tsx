@@ -244,7 +244,7 @@ export default function DemoDirectorScreen({ navigation }: any) {
 
         <TouchableOpacity style={styles.btn} onPress={handlePoliceAck}>
           <Text style={styles.btnTitle}>👮 Simulate Police Acknowledge (ETA 7m)</Text>
-          <Text style={styles.btnDesc}>Sends official acknowledge to turn victim checklist item green</Text>
+          <Text style={styles.btnDesc}>Sends official acknowledge to turn checklist item green</Text>
         </TouchableOpacity>
 
         {/* Section 2: Stealth Security & Duress */}

@@ -26,7 +26,7 @@ const { width } = Dimensions.get('window');
 const SHAKE_THRESHOLD = 2.5;
 const SHAKE_COOLDOWN = 3000; // ms
 
-export default function VictimDashboard({ navigation, route }: any) {
+export default function UserDashboard({ navigation, route }: any) {
     const user: SheSafeUser = route?.params?.user || { name: 'Priya Sharma', role: 'victim' };
 
     const [isMonitoring, setIsMonitoring] = useState(true);
@@ -182,7 +182,7 @@ export default function VictimDashboard({ navigation, route }: any) {
                     <View style={styles.headerLeft}>
                         <View style={styles.headerLogoContainer}>
                             <Image
-                                source={require('../../assets/logo.png')}
+                                source={require('../../assets/logo_minimal.jpg')}
                                 style={styles.headerLogoImage}
                                 resizeMode="cover"
                             />
