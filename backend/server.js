@@ -274,6 +274,52 @@ wss.on('connection', (ws, req) => {
             return;
         }
 
+        // ── ALERT_FIRED (from victim WebSocket) ────────────────
+        if (msg.type === 'ALERT_FIRED') {
+            const incomingAlert = msg.alert || {
+                id: msg.alert_id || `ALERT-${Date.now()}`,
+                victim_id: 'b247222f-6b5c-48c7-907c-852a49f1bd97',
+                victim_name: 'Priya Sharma',
+                victim_phone: '+91 98765 43210',
+                status: 'active',
+                lat: 12.9141,
+                lng: 74.8560,
+                address: 'Near Mangaluru Central',
+                triggered_at: new Date().toISOString(),
+                resolved_at: null,
+            };
+            const existingIdx = alerts.findIndex(a => a.id === incomingAlert.id);
+            if (existingIdx >= 0) {
+                alerts[existingIdx] = { ...alerts[existingIdx], ...incomingAlert, status: 'active' };
+            } else {
+                alerts.unshift(incomingAlert);
+            }
+            console.log(`[WS ${mt}] 🚨 ALERT_FIRED via WS: ${incomingAlert.id} (${incomingAlert.victim_name})`);
+            broadcast(['guardian','police','volunteer'], { type: 'ALERT_FIRED', alert: incomingAlert });
+            startEscalation(incomingAlert);
+            if (supabase) {
+                (async () => {
+                    try {
+                        await supabase.from('alerts').upsert({
+                            id: incomingAlert.id,
+                            victim_id: 'b247222f-6b5c-48c7-907c-852a49f1bd97',
+                            status: 'active',
+                            trigger: 'manual_sos',
+                            confidence: 1,
+                            risk_score: 85,
+                            started_at: incomingAlert.triggered_at,
+                            fired_at: incomingAlert.triggered_at,
+                            created_at: incomingAlert.triggered_at,
+                        });
+                        console.log(`[SUPABASE WS FIRE UPSERT] ✅ Alert ${incomingAlert.id} saved to DB`);
+                    } catch (e) {
+                        console.warn('[SUPABASE WS FIRE UPSERT ERROR]', e?.message);
+                    }
+                })();
+            }
+            return;
+        }
+
         // ── AUDIO_CHUNK (from victim) ──────────────────────────
         if (msg.type === 'AUDIO_CHUNK') {
             const { alert_id, data, seq, mime } = msg;
@@ -435,15 +481,42 @@ wss.on('connection', (ws, req) => {
                 }
             });
             if (!resolvedAlert) {
-                resolvedAlert = { id: targetId || 'ALERT-0001', status: 'resolved', victim_name: msg.victim_name || 'Priya Sharma' };
+                resolvedAlert = {
+                    id: targetId || `ALERT-${Date.now()}`,
+                    victim_id: 'b247222f-6b5c-48c7-907c-852a49f1bd97',
+                    victim_name: msg.victim_name || msg.alert?.victim_name || 'Priya Sharma',
+                    victim_phone: msg.alert?.victim_phone || '+91 98765 43210',
+                    status: 'resolved',
+                    lat: msg.alert?.lat || 12.9141,
+                    lng: msg.alert?.lng || 74.8560,
+                    address: msg.alert?.address || 'Near Mangaluru Central',
+                    triggered_at: msg.alert?.triggered_at || new Date().toISOString(),
+                    resolved_at: new Date().toISOString(),
+                };
+                alerts.unshift(resolvedAlert);
+            } else {
+                const idx = alerts.indexOf(resolvedAlert);
+                if (idx > 0) {
+                    alerts.splice(idx, 1);
+                    alerts.unshift(resolvedAlert);
+                }
             }
             if (supabase) {
                 (async () => {
                     try {
-                        await supabase.from('alerts').update({
+                        await supabase.from('alerts').upsert({
+                            id: resolvedAlert.id,
+                            victim_id: 'b247222f-6b5c-48c7-907c-852a49f1bd97',
                             status: 'resolved',
-                            resolved_at: new Date().toISOString(),
-                        }).eq('status', 'active');
+                            trigger: 'manual_sos',
+                            confidence: 1,
+                            risk_score: 85,
+                            started_at: resolvedAlert.triggered_at,
+                            fired_at: resolvedAlert.triggered_at,
+                            resolved_at: resolvedAlert.resolved_at,
+                            created_at: resolvedAlert.triggered_at,
+                        });
+                        console.log(`[SUPABASE WS RESOLVE UPSERT] ✅ ${resolvedAlert.id} marked resolved in DB`);
                     } catch (e) {
                         console.warn('[SUPABASE UPDATE ERROR]', e?.message);
                     }
@@ -728,16 +801,43 @@ app.post('/api/alert/resolve', async (req, res) => {
     });
 
     if (!resolvedAlert) {
-        resolvedAlert = { id: alert_id || 'ALERT-0001', status: 'resolved', victim_name: 'Priya Sharma' };
+        resolvedAlert = {
+            id: alert_id || `ALERT-${Date.now()}`,
+            victim_id: 'b247222f-6b5c-48c7-907c-852a49f1bd97',
+            victim_name: 'Priya Sharma',
+            victim_phone: '+91 98765 43210',
+            status: 'resolved',
+            triggered_at: new Date().toISOString(),
+            resolved_at: new Date().toISOString(),
+            lat: 12.9141,
+            lng: 74.8560,
+            address: 'Near Mangaluru Central',
+        };
+        alerts.unshift(resolvedAlert);
+    } else {
+        const idx = alerts.indexOf(resolvedAlert);
+        if (idx > 0) {
+            alerts.splice(idx, 1);
+            alerts.unshift(resolvedAlert);
+        }
     }
 
     // Mirror to Supabase alerts table
     if (supabase) {
         try {
-            await supabase.from('alerts').update({
+            await supabase.from('alerts').upsert({
+                id: resolvedAlert.id,
+                victim_id: 'b247222f-6b5c-48c7-907c-852a49f1bd97',
                 status: 'resolved',
-                resolved_at: new Date().toISOString(),
-            }).eq('status', 'active');
+                trigger: 'manual_sos',
+                confidence: 1,
+                risk_score: 85,
+                started_at: resolvedAlert.triggered_at,
+                fired_at: resolvedAlert.triggered_at,
+                resolved_at: resolvedAlert.resolved_at,
+                created_at: resolvedAlert.triggered_at,
+            });
+            console.log(`[SUPABASE REST RESOLVE UPSERT] ✅ ${resolvedAlert.id} marked resolved in DB`);
         } catch (err) {
             console.warn('[SUPABASE RESOLVE SYNC ERROR]', err?.message);
         }
@@ -857,18 +957,46 @@ app.post('/api/alert/duress', (req, res) => {
     res.json({ success: true });
 });
 
-// Save recording to disk
-app.post('/api/recording/save', (req, res) => {
+// Save recording to disk & Supabase storage
+app.post('/api/recording/save', async (req, res) => {
     const { alert_id, audio_b64, mime_type } = req.body;
     if (!alert_id || !audio_b64) return res.status(400).json({ error: 'alert_id and audio_b64 required' });
     try {
-        const filename = `recording_${alert_id}_${Date.now()}.m4a`;
+        const ext = (mime_type && mime_type.includes('wav')) ? 'wav' : 'mp3';
+        const filename = `recording_${alert_id}_${Date.now()}.${ext}`;
         const filepath = path.join(RECORDINGS_DIR, filename);
-        fs.writeFileSync(filepath, Buffer.from(audio_b64, 'base64'));
+        const buffer = Buffer.from(audio_b64, 'base64');
+        fs.writeFileSync(filepath, buffer);
         const fileUrl = `http://${NETWORK_IP}:3001/recordings/${filename}`;
+
+        if (!audioChunkBuffer[alert_id]) audioChunkBuffer[alert_id] = [];
+        const chunkObj = {
+            seq: audioChunkBuffer[alert_id].length,
+            data: audio_b64,
+            mime: mime_type || (ext === 'wav' ? 'audio/wav' : 'audio/mp3'),
+            ts: new Date().toISOString(),
+            storageUrl: fileUrl,
+        };
+        audioChunkBuffer[alert_id].push(chunkObj);
+
+        // Upload to Supabase storage bucket `evidence`
+        if (supabase) {
+            try {
+                const sbPath = `${alert_id}/audio_${chunkObj.seq}_${Date.now()}.${ext}`;
+                await supabase.storage.from('evidence').upload(sbPath, buffer, {
+                    contentType: mime_type || (ext === 'wav' ? 'audio/wav' : 'audio/mp3'),
+                    upsert: true,
+                });
+                const { data: pubData } = supabase.storage.from('evidence').getPublicUrl(sbPath);
+                if (pubData?.publicUrl) chunkObj.storageUrl = pubData.publicUrl;
+            } catch (sbErr) {
+                console.warn('[SUPABASE RECORDING SAVE ERROR]', sbErr?.message);
+            }
+        }
+
         const t = new Date().toLocaleTimeString();
         console.log(`[RECORDING ${t}] 💾 Saved ${filename} (${Math.round(audio_b64.length / 1024)} KB)`);
-        res.json({ success: true, url: fileUrl, filename });
+        res.json({ success: true, url: chunkObj.storageUrl || fileUrl, filename });
     } catch (err) {
         res.status(500).json({ error: 'Failed to save recording' });
     }
@@ -879,14 +1007,50 @@ app.use('/recordings', express.static(RECORDINGS_DIR));
 app.get('/api/alerts',        (req, res) => res.json({ alerts: alerts.slice(0, 20) }));
 app.get('/api/alerts/active', (req, res) => res.json({ alerts: alerts.filter(a => a.status === 'active') }));
 
-app.get('/api/evidence/:alertId', (req, res) => {
+app.get('/api/evidence/:alertId', async (req, res) => {
     const alertId = req.params.alertId;
-    const chunks = audioChunkBuffer[alertId] || [];
-    const frames = allVideoFrames[alertId] || (videoFrameBuffer[alertId] ? [videoFrameBuffer[alertId]] : []);
+    let chunks = audioChunkBuffer[alertId] || [];
+    let frames = allVideoFrames[alertId] || (videoFrameBuffer[alertId] ? [videoFrameBuffer[alertId]] : []);
+
+    // If memory is empty or missing files, query Supabase storage bucket `evidence` directly
+    if (supabase && (chunks.length === 0 || frames.length === 0)) {
+        try {
+            const { data: files } = await supabase.storage.from('evidence').list(alertId);
+            if (Array.isArray(files) && files.length > 0) {
+                const sbAudio = [];
+                const sbFrames = [];
+                for (const f of files) {
+                    const { data: pubData } = supabase.storage.from('evidence').getPublicUrl(`${alertId}/${f.name}`);
+                    const publicUrl = pubData?.publicUrl || '';
+                    if (f.name.startsWith('audio_') || f.name.endsWith('.mp3') || f.name.endsWith('.wav') || f.name.endsWith('.m4a')) {
+                        sbAudio.push({
+                            seq: sbAudio.length,
+                            mime: f.name.endsWith('.wav') ? 'audio/wav' : 'audio/mp3',
+                            url: publicUrl,
+                            data: '',
+                            ts: f.created_at,
+                        });
+                    } else if (f.name.startsWith('photo_') || f.name.endsWith('.jpg') || f.name.endsWith('.png')) {
+                        sbFrames.push({
+                            seq: sbFrames.length,
+                            url: publicUrl,
+                            data: '',
+                            ts: f.created_at,
+                        });
+                    }
+                }
+                if (chunks.length === 0 && sbAudio.length > 0) chunks = sbAudio;
+                if (frames.length === 0 && sbFrames.length > 0) frames = sbFrames;
+            }
+        } catch (e) {
+            console.warn('[EVIDENCE SUPABASE FETCH ERROR]', e?.message);
+        }
+    }
+
     res.json({
         alert_id: alertId,
-        audio_chunks: chunks.map(c => ({ seq: c.seq, mime: c.mime, ts: c.ts, data: c.data, url: c.storageUrl })),
-        video_frames: frames.map(f => ({ seq: f.seq, ts: f.ts, data: f.data, url: f.storageUrl })),
+        audio_chunks: chunks.map(c => ({ seq: c.seq, mime: c.mime, ts: c.ts, data: c.data, url: c.storageUrl || c.url })),
+        video_frames: frames.map(f => ({ seq: f.seq, ts: f.ts, data: f.data, url: f.storageUrl || f.url })),
     });
 });
 

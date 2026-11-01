@@ -17,16 +17,31 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { generateAndShareEvidencePDF } from '../utils/evidencePdf';
 
-async function saveOrShareFile(dataUriOrBase64: string, filename: string, mimeType: string, isUrl = false): Promise<boolean> {
+async function saveOrShareFile(dataUriOrBase64: string, filename: string, mimeType: string, isUrl = false, shouldShare = true): Promise<boolean> {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
         try {
+            let downloadHref = dataUriOrBase64;
+            if (isUrl) {
+                try {
+                    const response = await fetch(dataUriOrBase64);
+                    const blob = await response.blob();
+                    downloadHref = URL.createObjectURL(blob);
+                } catch (_) {
+                    window.open(dataUriOrBase64, '_blank');
+                    return true;
+                }
+            } else if (!dataUriOrBase64.startsWith('data:')) {
+                downloadHref = `data:${mimeType};base64,${dataUriOrBase64}`;
+            }
             const a = document.createElement('a');
-            a.href = isUrl ? dataUriOrBase64 : (dataUriOrBase64.startsWith('data:') ? dataUriOrBase64 : `data:${mimeType};base64,${dataUriOrBase64}`);
+            a.href = downloadHref;
             a.download = filename;
-            if (isUrl) a.target = '_blank';
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
+            if (downloadHref.startsWith('blob:')) {
+                setTimeout(() => URL.revokeObjectURL(downloadHref), 15000);
+            }
             return true;
         } catch (e) {
             console.warn('[WEB SAVE ERROR]', e);
@@ -42,7 +57,7 @@ async function saveOrShareFile(dataUriOrBase64: string, filename: string, mimeTy
                 const b64 = dataUriOrBase64.includes(',') ? dataUriOrBase64.split(',')[1] : dataUriOrBase64;
                 await FileSystem.writeAsStringAsync(targetUri, b64, { encoding: FileSystem.EncodingType.Base64 });
             }
-            if (await Sharing.isAvailableAsync()) {
+            if (shouldShare && await Sharing.isAvailableAsync()) {
                 await Sharing.shareAsync(targetUri, { mimeType, dialogTitle: `Save ${filename}` });
             }
             return true;
@@ -155,7 +170,23 @@ export default function PoliceDashboard({ navigation, route }: any) {
             // When no active alerts exist on backend / DB, clear activeAlert immediately
             setActiveAlert(null);
         }
-        setHistory(all);
+        setHistory(prev => {
+            const map = new Map<string, SheSafeAlert>();
+            all.forEach(item => { if (item?.id) map.set(item.id, item); });
+            prev.forEach(item => {
+                if (item?.id) {
+                    const existing = map.get(item.id);
+                    if (!existing || (item.status === 'resolved' && existing.status !== 'resolved')) {
+                        map.set(item.id, { ...existing, ...item });
+                    }
+                }
+            });
+            return Array.from(map.values()).sort((a, b) => {
+                const tA = new Date(a.triggered_at || a.created_at || 0).getTime();
+                const tB = new Date(b.triggered_at || b.created_at || 0).getTime();
+                return tB - tA;
+            });
+        });
     };
 
     const connectWS = () => {
@@ -247,7 +278,7 @@ export default function PoliceDashboard({ navigation, route }: any) {
                         resolved_at: new Date().toISOString(),
                     };
                     setHistory(prev => [polResolvedItem, ...prev.filter(a => a.id !== polResolvedItem.id)]);
-                    loadAlerts(); // Refresh history from backend
+                    setTimeout(() => { loadAlerts(); }, 500);
                     try { soundRef.current?.remove(); } catch (_) {}
                     soundRef.current = null;
                     audioQueue.current = [];
@@ -402,13 +433,13 @@ export default function PoliceDashboard({ navigation, route }: any) {
 
             try {
                 const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 3000);
+                const timeoutId = setTimeout(() => controller.abort(), 4000);
                 const res = await fetch(`${BACKEND_URL}/api/evidence/${targetAlert.id}`, { signal: controller.signal });
                 clearTimeout(timeoutId);
                 if (res.ok) {
                     const data = await res.json();
                     if (data.video_frames && data.video_frames.length > 0) {
-                        allFrames = data.video_frames.map((f: any) => f.data).filter(Boolean);
+                        allFrames = data.video_frames.map((f: any) => f.url || f.data).filter(Boolean);
                     }
                     if (data.audio_chunks && data.audio_chunks.length > 0) {
                         audCount = data.audio_chunks.length;
@@ -443,7 +474,7 @@ export default function PoliceDashboard({ navigation, route }: any) {
     const downloadIncidentEvidence = async (targetAlert: SheSafeAlert) => {
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 3500);
+            const timeoutId = setTimeout(() => controller.abort(), 4000);
             let dlCount = 0;
             let data: any = null;
 
@@ -455,51 +486,54 @@ export default function PoliceDashboard({ navigation, route }: any) {
                 }
             } catch (_) {}
 
-            const audioList = data?.audio_chunks || [];
-            const photoList = data?.video_frames || [];
+            const audioList: any[] = data?.audio_chunks || [];
+            const photoList: any[] = data?.video_frames || [];
 
-            // 1. Download/Share stored audio chunks
-            for (let idx = 0; idx < audioList.length; idx++) {
-                const c = audioList[idx];
-                const filename = `SheSafe_${targetAlert.id.slice(0, 8)}_Audio_${c.seq ?? idx}.mp3`;
-                if (c.url) {
-                    await saveOrShareFile(c.url, filename, 'audio/mp3', true);
+            // 1. Download primary full 10-second audio recording
+            if (audioList.length > 0) {
+                const primaryAudio = audioList[audioList.length - 1] || audioList[0];
+                const ext = primaryAudio.mime?.includes('wav') ? 'wav' : 'mp3';
+                const filename = `SheSafe_${targetAlert.id.slice(0, 8)}_10s_Audio.${ext}`;
+                if (primaryAudio.url) {
+                    await saveOrShareFile(primaryAudio.url, filename, primaryAudio.mime || 'audio/wav', true, true);
                     dlCount++;
-                } else if (c.data) {
-                    await saveOrShareFile(c.data, filename, 'audio/mp3', false);
+                } else if (primaryAudio.data) {
+                    await saveOrShareFile(primaryAudio.data, filename, primaryAudio.mime || 'audio/wav', false, true);
                     dlCount++;
                 }
             }
 
-            // 2. Download/Share stored photos
-            for (let idx = 0; idx < photoList.length; idx++) {
-                const f = photoList[idx];
-                const filename = `SheSafe_${targetAlert.id.slice(0, 8)}_Photo_${f.seq ?? idx}.jpg`;
-                if (f.url) {
-                    await saveOrShareFile(f.url, filename, 'image/jpeg', true);
+            // 2. Download primary evidence photo frame
+            if (photoList.length > 0) {
+                const primaryPhoto = photoList[photoList.length - 1] || photoList[0];
+                const filename = `SheSafe_${targetAlert.id.slice(0, 8)}_Photo.jpg`;
+                if (primaryPhoto.url) {
+                    await saveOrShareFile(primaryPhoto.url, filename, 'image/jpeg', true, Platform.OS === 'web');
                     dlCount++;
-                } else if (f.data) {
-                    await saveOrShareFile(f.data, filename, 'image/jpeg', false);
+                } else if (primaryPhoto.data) {
+                    await saveOrShareFile(primaryPhoto.data, filename, 'image/jpeg', false, Platform.OS === 'web');
                     dlCount++;
                 }
             }
 
-            // 3. Fallback to active in-memory session frames/audio
+            // 3. Fallback to active in-memory session frames/audio if server buffer empty
             if (dlCount === 0) {
                 const memAudio = audioChunksRef.current;
                 const memFrames = videoFramesRef.current;
-                for (let i = 0; i < memAudio.length; i++) {
-                    await saveOrShareFile(memAudio[i].data, `SheSafe_${targetAlert.id.slice(0, 8)}_Audio_${i}.mp3`, 'audio/mp3', false);
+                if (memAudio.length > 0) {
+                    const primaryAudio = memAudio[memAudio.length - 1] || memAudio[0];
+                    await saveOrShareFile(primaryAudio.data, `SheSafe_${targetAlert.id.slice(0, 8)}_10s_Audio.wav`, 'audio/wav', false, true);
                     dlCount++;
                 }
-                for (let i = 0; i < memFrames.length; i++) {
-                    await saveOrShareFile(memFrames[i].data, `SheSafe_${targetAlert.id.slice(0, 8)}_Photo_${i}.jpg`, 'image/jpeg', false);
+                if (memFrames.length > 0) {
+                    const primaryFrame = memFrames[memFrames.length - 1] || memFrames[0];
+                    await saveOrShareFile(primaryFrame.data, `SheSafe_${targetAlert.id.slice(0, 8)}_Photo.jpg`, 'image/jpeg', false, Platform.OS === 'web');
                     dlCount++;
                 }
             }
 
             if (dlCount > 0) {
-                Alert.alert('📥 Evidence Downloaded', `${dlCount} files downloaded for incident ${targetAlert.id.slice(0, 8)}...`);
+                Alert.alert('📥 Evidence Downloaded', `Successfully prepared 10s audio & photo evidence files for incident ${targetAlert.id.slice(0, 8)}.`);
             } else {
                 Alert.alert('Evidence Notice', 'No raw media files found for this incident.');
             }

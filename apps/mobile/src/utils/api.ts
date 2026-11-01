@@ -58,6 +58,7 @@ export interface SheSafeAlert {
     address: string | null;
     triggered_at: string;
     resolved_at: string | null;
+    created_at?: string;
 }
 
 // ─── AUTH ─────────────────────────────────────────────────────

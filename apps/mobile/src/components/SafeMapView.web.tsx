@@ -79,40 +79,52 @@ const SafeMapView = ({ children, style, region, initialRegion }: SafeMapViewProp
 <body>
   <div id="map"></div>
   <script>
-    try {
-      var map = L.map('map', { zoomControl: true, attributionControl: false }).setView([${lat}, ${lng}], 15);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19
-      }).addTo(map);
-
-      // Add center / default marker if none passed
-      var markersData = ${JSON.stringify(markers)};
-      if (markersData.length === 0) {
-        L.marker([${lat}, ${lng}]).addTo(map).bindPopup("<b>Incident Location</b><br>${lat.toFixed(5)}, ${lng.toFixed(5)}").openPopup();
-      } else {
-        var group = [];
-        markersData.forEach(function(m) {
-          var pinColor = m.color === 'green' ? '#10B981' : m.color === 'yellow' ? '#F59E0B' : '#DC2626';
-          var customIcon = L.divIcon({
-            className: '',
-            html: '<div class="custom-pin" style="background-color:' + pinColor + ';">📍</div>',
-            iconSize: [24, 24],
-            iconAnchor: [12, 24]
-          });
-          var marker = L.marker([m.lat, m.lng], { icon: customIcon }).addTo(map);
-          if (m.title) marker.bindPopup("<b>" + m.title + "</b>");
-          group.push([m.lat, m.lng]);
-        });
+    function initMap() {
+      if (typeof L === 'undefined') {
+        setTimeout(initMap, 100);
+        return;
       }
+      try {
+        var map = L.map('map', { zoomControl: true, attributionControl: false }).setView([${lat}, ${lng}], 15);
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19
+        }).addTo(map);
 
-      // Draw polylines (SafeWalk / Cab routes)
-      var polylinesData = ${JSON.stringify(polylines)};
-      polylinesData.forEach(function(poly) {
-        var latlngs = poly.coords.map(function(c) { return [c.latitude, c.longitude]; });
-        L.polyline(latlngs, { color: poly.color || '#2563EB', weight: 5, opacity: 0.85 }).addTo(map);
-      });
-    } catch(e) {
-      console.error("Leaflet load error", e);
+        // Add center / default marker if none passed
+        var markersData = ${JSON.stringify(markers)};
+        if (markersData.length === 0) {
+          L.marker([${lat}, ${lng}]).addTo(map).bindPopup("<b>📍 Incident Location</b><br>${lat.toFixed(5)}, ${lng.toFixed(5)}").openPopup();
+        } else {
+          markersData.forEach(function(m) {
+            var pinColor = m.color === 'green' ? '#10B981' : m.color === 'yellow' ? '#F59E0B' : '#DC2626';
+            var customIcon = L.divIcon({
+              className: '',
+              html: '<div class="custom-pin" style="background-color:' + pinColor + ';">📍</div>',
+              iconSize: [26, 26],
+              iconAnchor: [13, 26]
+            });
+            var marker = L.marker([m.lat, m.lng], { icon: customIcon }).addTo(map);
+            if (m.title) marker.bindPopup("<b>" + m.title + "</b>").openPopup();
+          });
+        }
+
+        // Draw polylines (SafeWalk / Cab routes)
+        var polylinesData = ${JSON.stringify(polylines)};
+        polylinesData.forEach(function(poly) {
+          var latlngs = poly.coords.map(function(c) { return [c.latitude, c.longitude]; });
+          L.polyline(latlngs, { color: poly.color || '#2563EB', weight: 5, opacity: 0.85 }).addTo(map);
+        });
+
+        setTimeout(function() { map.invalidateSize(); }, 200);
+        setTimeout(function() { map.invalidateSize(); }, 800);
+      } catch(e) {
+        console.error("Leaflet load error", e);
+      }
+    }
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+      initMap();
+    } else {
+      window.addEventListener('DOMContentLoaded', initMap);
     }
   </script>
 </body>
