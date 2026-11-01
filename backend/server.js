@@ -51,6 +51,32 @@ const USERS = [
 let alerts = [];
 let alertIdCounter = 1;
 
+// Load historical alerts from Supabase on startup so history persists across backend restarts
+(async () => {
+    if (!supabase) return;
+    try {
+        const { data, error } = await supabase.from('alerts').select('*').order('created_at', { ascending: false }).limit(50);
+        if (!error && Array.isArray(data) && data.length > 0) {
+            data.forEach(a => {
+                alerts.push({
+                    id: a.id,
+                    victim_name: a.victim_name || 'Priya Sharma',
+                    victim_phone: a.victim_phone || '+91 98765 43210',
+                    status: a.status || 'resolved',
+                    triggered_at: a.started_at || a.created_at,
+                    resolved_at: a.resolved_at,
+                    lat: a.lat || 12.9141,
+                    lng: a.lng || 74.8560,
+                    address: a.address || 'Near Mangaluru Central',
+                });
+            });
+            console.log(`[STARTUP] Loaded ${alerts.length} historical alerts from Supabase`);
+        }
+    } catch (e) {
+        console.warn('[STARTUP] Could not load historical alerts:', e?.message);
+    }
+})();
+
 let activeSafeWalk = null;
 let activeCabRide  = null;
 let communityHazards = [
@@ -631,19 +657,24 @@ app.post('/api/alert/fire', async (req, res) => {
         startEscalation(alert);
     }
 
-    // Sync with Supabase alerts table
+    // Sync with Supabase alerts table (with victim info for history persistence)
     if (supabase) {
         try {
             await supabase.from('alerts').insert({
-                id: crypto.randomUUID(),
+                id: alert.id,
                 victim_id: victim_id || 'b247222f-6b5c-48c7-907c-852a49f1bd97',
+                victim_name: alert.victim_name || 'Priya Sharma',
+                victim_phone: alert.victim_phone || '+91 98765 43210',
                 status: 'active',
                 trigger: 'manual_sos',
                 confidence: 1,
                 risk_score: 85,
                 duress: !!duress,
-                started_at: new Date().toISOString(),
-                fired_at: new Date().toISOString(),
+                lat: alert.lat || null,
+                lng: alert.lng || null,
+                started_at: alert.triggered_at,
+                fired_at: alert.triggered_at,
+                created_at: alert.triggered_at,
             });
         } catch (err) {
             console.warn('[SUPABASE FIRE SYNC ERROR]', err?.message);

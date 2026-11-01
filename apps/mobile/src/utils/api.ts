@@ -302,24 +302,26 @@ export async function getActiveAlerts(): Promise<SheSafeAlert[]> {
 }
 
 export async function getAllAlerts(): Promise<SheSafeAlert[]> {
-    const time = new Date().toLocaleTimeString();
+    // Primary: backend in-memory
     try {
         const res = await fetch(`${BACKEND_URL}/api/alerts`);
         if (res.ok) {
             const data = await res.json();
-            if (Array.isArray(data.alerts)) {
+            if (Array.isArray(data.alerts) && data.alerts.length > 0) {
                 return data.alerts;
             }
         }
     } catch {}
 
+    // Fallback: Supabase (persisted history)
     try {
         const { data, error } = await supabase
             .from('alerts')
             .select('*')
-            .order('created_at', { ascending: false });
+            .order('created_at', { ascending: false })
+            .limit(50);
 
-        if (!error && Array.isArray(data)) {
+        if (!error && Array.isArray(data) && data.length > 0) {
             return data.map(mapSupabaseAlert);
         }
     } catch {}

@@ -221,22 +221,7 @@ export default function GuardianDashboard({ navigation, route }: any) {
                     audioChunksRef.current.push({ data: msg.data, mime: msg.mime || 'audio/mp3', seq: msg.seq });
                     setAudioChunkCount(c => c + 1);
                     setAudioLevel(prev => [...prev.slice(-14), Math.min(msg.data.length / 5000, 100)]);
-
-                    // Auto-download as MP3 to browser Downloads folder on Web
-                    triggerBrowserDownload(`data:${msg.mime || 'audio/mp3'};base64,${msg.data}`, `SheSafe_Guardian_Audio_${msg.seq}_${Date.now()}.mp3`);
-
-                    // Auto-download incoming audio to device storage on Native
-                    (async () => {
-                        try {
-                            const baseDir = FileSystem.documentDirectory || FileSystem.cacheDirectory;
-                            if (baseDir) {
-                                const autoUri = `${baseDir}SheSafe_Guardian_Audio_${msg.seq}_${Date.now()}.mp3`;
-                                await FileSystem.writeAsStringAsync(autoUri, msg.data, { encoding: FileSystem.EncodingType.Base64 });
-                            }
-                            setAutoSavedAudioCount(c => c + 1);
-                        } catch (_) {}
-                    })();
-
+                    // DO NOT auto-download live chunks — user downloads via button press on history card
                     enqueueAudio(msg.data, msg.mime || 'audio/mp3');
                     break;
 
@@ -245,21 +230,7 @@ export default function GuardianDashboard({ navigation, route }: any) {
                     const cleanData = (msg.data || '').replace(/[\r\n\s]/g, '');
                     videoFramesRef.current = [...videoFramesRef.current.slice(-9), { data: cleanData, seq: msg.seq }];
                     setLiveVideoFrame(cleanData);
-
-                    // Auto-download to browser Downloads folder on Web
-                    triggerBrowserDownload(`data:image/jpeg;base64,${cleanData}`, `SheSafe_Guardian_Photo_${msg.seq}_${Date.now()}.jpg`);
-
-                    // Auto-download camera frames to device storage on Native
-                    (async () => {
-                        try {
-                            const baseDir = FileSystem.documentDirectory || FileSystem.cacheDirectory;
-                            if (baseDir) {
-                                const autoImgUri = `${baseDir}SheSafe_Guardian_Photo_${msg.seq}_${Date.now()}.jpg`;
-                                await FileSystem.writeAsStringAsync(autoImgUri, cleanData, { encoding: FileSystem.EncodingType.Base64 });
-                            }
-                            setAutoSavedPhotoCount(c => c + 1);
-                        } catch (_) {}
-                    })();
+                    // DO NOT auto-download live frames — user downloads via button press on history card
                     break;
                 }
 
@@ -497,31 +468,52 @@ export default function GuardianDashboard({ navigation, route }: any) {
 
     const downloadIncidentEvidence = async (targetAlert: SheSafeAlert) => {
         try {
+            // Fetch evidence from backend (which reads from Supabase storage + in-memory)
             const res = await fetch(`${BACKEND_URL}/api/evidence/${targetAlert.id}`);
+            let dlCount = 0;
+
             if (res.ok) {
                 const data = await res.json();
-                let dlCount = 0;
-                // Auto-download all audio chunks for this incident
-                if (data.audio_chunks && data.audio_chunks.length > 0) {
-                    data.audio_chunks.forEach((c: any) => {
-                        if (c.data) {
-                            triggerBrowserDownload(`data:audio/mp3;base64,${c.data}`, `SheSafe_${targetAlert.id}_Audio_${c.seq}.mp3`);
-                            dlCount++;
-                        }
-                    });
+
+                // Download audio via Supabase URL (preferred) or base64 fallback
+                (data.audio_chunks || []).forEach((c: any, idx: number) => {
+                    if (c.url) {
+                        // Use public Supabase URL for direct download
+                        const a = typeof document !== 'undefined' ? document.createElement('a') : null;
+                        if (a) { a.href = c.url; a.download = `SheSafe_${targetAlert.id}_Audio_${c.seq ?? idx}.mp3`; a.target = '_blank'; document.body.appendChild(a); a.click(); document.body.removeChild(a); dlCount++; }
+                    } else if (c.data) {
+                        triggerBrowserDownload(`data:audio/mp3;base64,${c.data}`, `SheSafe_${targetAlert.id}_Audio_${c.seq ?? idx}.mp3`);
+                        dlCount++;
+                    }
+                });
+
+                // Download photos via Supabase URL (preferred) or base64 fallback
+                (data.video_frames || []).forEach((f: any, idx: number) => {
+                    if (f.url) {
+                        const a = typeof document !== 'undefined' ? document.createElement('a') : null;
+                        if (a) { a.href = f.url; a.download = `SheSafe_${targetAlert.id}_Photo_${f.seq ?? idx}.jpg`; a.target = '_blank'; document.body.appendChild(a); a.click(); document.body.removeChild(a); dlCount++; }
+                    } else if (f.data) {
+                        triggerBrowserDownload(`data:image/jpeg;base64,${f.data}`, `SheSafe_${targetAlert.id}_Photo_${f.seq ?? idx}.jpg`);
+                        dlCount++;
+                    }
+                });
+
+                if (dlCount > 0) {
+                    Alert.alert('📥 Evidence Downloaded', `${dlCount} files downloaded for incident ${targetAlert.id.slice(0,8)}...`);
+                } else {
+                    // Fallback: use in-memory chunks from current session
+                    const memAudio = audioChunksRef.current;
+                    const memFrames = videoFramesRef.current;
+                    if (memAudio.length > 0 || memFrames.length > 0) {
+                        memAudio.forEach((c, i) => triggerBrowserDownload(`data:audio/mp3;base64,${c.data}`, `SheSafe_${targetAlert.id}_Audio_${i}.mp3`));
+                        memFrames.forEach((f, i) => triggerBrowserDownload(`data:image/jpeg;base64,${f.data}`, `SheSafe_${targetAlert.id}_Photo_${i}.jpg`));
+                        Alert.alert('📥 Evidence Downloaded', `${memAudio.length + memFrames.length} files from current session.`);
+                    } else {
+                        Alert.alert('No Evidence', 'No media files found for this incident. Evidence may not have been recorded.');
+                    }
                 }
-                // Auto-download all photo frames for this incident
-                if (data.video_frames && data.video_frames.length > 0) {
-                    data.video_frames.forEach((f: any) => {
-                        if (f.data) {
-                            triggerBrowserDownload(`data:image/jpeg;base64,${f.data}`, `SheSafe_${targetAlert.id}_Photo_${f.seq}.jpg`);
-                            dlCount++;
-                        }
-                    });
-                }
-                Alert.alert('📥 Evidence Downloaded', `Successfully triggered download for ${dlCount} media files from incident ${targetAlert.id}.`);
             } else {
-                Alert.alert('Evidence Notice', 'No additional raw recordings stored for this incident.');
+                Alert.alert('Evidence Notice', 'Evidence server unavailable. Try again shortly.');
             }
         } catch (e: any) {
             Alert.alert('Download Error', e?.message || 'Could not download incident files.');
