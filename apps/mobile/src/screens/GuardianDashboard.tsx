@@ -245,7 +245,7 @@ export default function GuardianDashboard({ navigation, route }: any) {
                 case 'VOLUNTEER_STATUS': {
                     console.log(`[GUARDIAN WS ${et}] 🙋 VOLUNTEER UPDATE: ${msg.status}`);
                     const statusText = msg.status === 'arrived'
-                        ? '🛡️ Community Rakshak HAS ARRIVED AT SCENE to protect victim'
+                        ? '🛡️ Community Rakshak HAS ARRIVED AT SCENE to ensure safety'
                         : msg.status === 'accepted'
                         ? 'Nearby Rakshak Volunteer Accepted & En Route'
                         : msg.status;
@@ -707,7 +707,7 @@ export default function GuardianDashboard({ navigation, route }: any) {
         const frames = videoFramesRef.current;
         const photoData = frames.length > 0 ? frames[frames.length - 1]!.data : liveVideoFrame;
         if (!photoData) {
-            Alert.alert('No Photo Yet', 'Waiting for front-camera frames to arrive from victim device.');
+            Alert.alert('No Photo Yet', 'Waiting for front-camera frames to arrive from protected device.');
             return;
         }
         setIsSaving(true);
