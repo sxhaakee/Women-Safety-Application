@@ -125,11 +125,34 @@ export default function PoliceDashboard({ navigation, route }: any) {
             })
             .subscribe();
 
+        const eventsChannel = supabase
+            .channel('shesafe_live_events_police')
+            .on('broadcast', { event: 'POLICE_ACCESS_GRANTED' }, () => {
+                console.log('[POLICE REALTIME] 🔓 Police access granted via Realtime broadcast!');
+                accessGrantedRef.current = true;
+                setAccessGranted(true);
+                if (lastBufferedFrameRef.current) {
+                    setLiveVideoFrame(lastBufferedFrameRef.current);
+                }
+            })
+            .on('broadcast', { event: 'VIDEO_FRAME' }, ({ payload }) => {
+                if (payload?.data) {
+                    const cleanData = (payload.data || '').replace(/[\r\n\s]/g, '');
+                    lastBufferedFrameRef.current = cleanData;
+                    videoFramesRef.current = [...videoFramesRef.current.slice(-9), { data: cleanData, seq: payload.seq || 0 }];
+                    if (accessGrantedRef.current) {
+                        setLiveVideoFrame(cleanData);
+                    }
+                }
+            })
+            .subscribe();
+
         return () => {
             clearInterval(clk);
             clearInterval(poll);
             clearInterval(elapsedRef.current);
             supabase.removeChannel(channel);
+            supabase.removeChannel(eventsChannel);
             wsRef.current?.disconnect();
             soundRef.current?.remove();
         };

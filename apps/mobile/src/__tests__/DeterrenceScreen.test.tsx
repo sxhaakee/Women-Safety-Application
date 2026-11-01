@@ -1,6 +1,16 @@
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock')
 );
+jest.mock('expo-audio', () => ({
+  useAudioRecorder: () => ({ uri: null, record: jest.fn(), stop: jest.fn() }),
+  RecordingPresets: { HIGH_QUALITY: {} },
+  AudioModule: { requestRecordingPermissionsAsync: jest.fn() },
+  setAudioModeAsync: jest.fn(),
+}));
+jest.mock('expo-camera', () => ({
+  CameraView: () => null,
+  useCameraPermissions: () => [null, jest.fn()],
+}));
 
 import { STROBE_HZ } from '../screens/DeterrenceScreen';
 

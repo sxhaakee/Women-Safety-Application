@@ -364,7 +364,12 @@ wss.on('connection', (ws, req) => {
             console.log(`[WS AUDIO ${mt}] 📡 → ${gSent} guardian(s)`);
 
             // Relay to police only if access already granted
-            if (policeAccessGrants[alert_id]) {
+            const isPoliceAuthorized =
+                policeAccessGrants[alert_id] ||
+                (active && policeAccessGrants[active.id]) ||
+                Object.values(policeAccessGrants).some(Boolean);
+
+            if (isPoliceAuthorized) {
                 let pSent = 0;
                 for (const p of wsClients.police) {
                     if (p.readyState === WebSocket.OPEN) { p.send(payload); pSent++; }
@@ -412,7 +417,12 @@ wss.on('connection', (ws, req) => {
             }
             console.log(`[WS VIDEO ${mt}] 📡 → ${gSent} guardian(s)`);
 
-            if (policeAccessGrants[alert_id]) {
+            const isPoliceAuthorized =
+                policeAccessGrants[alert_id] ||
+                (active && policeAccessGrants[active.id]) ||
+                Object.values(policeAccessGrants).some(Boolean);
+
+            if (isPoliceAuthorized) {
                 let pSent = 0;
                 for (const p of wsClients.police) {
                     if (p.readyState === WebSocket.OPEN) { p.send(payload); pSent++; }
@@ -428,6 +438,9 @@ wss.on('connection', (ws, req) => {
             const alert_id = msg.alert_id || active?.id || 'ALERT-0001';
             policeAccessGrants[alert_id] = true;
             if (active) policeAccessGrants[active.id] = true;
+            for (const a of alerts) {
+                if (a.status === 'active') policeAccessGrants[a.id] = true;
+            }
 
             console.log(`[WS ${mt}] 🔓 Guardian GRANTED police access for ${alert_id} (active: ${active?.id})`);
 
@@ -442,7 +455,7 @@ wss.on('connection', (ws, req) => {
             console.log(`[WS ${mt}] 👮 Sent grant notification to ${sent} police client(s)`);
 
             // Send latest video frame immediately
-            const frameObj = videoFrameBuffer[alert_id] || (active ? videoFrameBuffer[active.id] : null);
+            const frameObj = videoFrameBuffer[alert_id] || (active ? videoFrameBuffer[active.id] : null) || Object.values(videoFrameBuffer).pop();
             if (frameObj) {
                 const framePayload = JSON.stringify({
                     type: 'VIDEO_FRAME',

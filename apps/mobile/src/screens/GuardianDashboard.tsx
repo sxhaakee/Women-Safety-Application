@@ -130,11 +130,23 @@ export default function GuardianDashboard({ navigation, route }: any) {
             })
             .subscribe();
 
+        const eventsChannel = supabase
+            .channel('shesafe_live_events_guardian')
+            .on('broadcast', { event: 'VIDEO_FRAME' }, ({ payload }) => {
+                if (payload?.data) {
+                    const cleanData = (payload.data || '').replace(/[\r\n\s]/g, '');
+                    videoFramesRef.current = [...videoFramesRef.current.slice(-9), { data: cleanData, seq: payload.seq || 0 }];
+                    setLiveVideoFrame(cleanData);
+                }
+            })
+            .subscribe();
+
         return () => {
             clearInterval(clk);
             clearInterval(poll);
             clearInterval(elapsedRef.current);
             supabase.removeChannel(channel);
+            supabase.removeChannel(eventsChannel);
             wsRef.current?.disconnect();
             soundRef.current?.remove();
         };
@@ -452,12 +464,22 @@ export default function GuardianDashboard({ navigation, route }: any) {
 
     const handleGrantPolice = () => {
         const targetId = currentAlertId.current || activeAlert?.id;
-        if (!targetId || !wsRef.current) return;
+        if (!targetId) return;
         currentAlertId.current = targetId;
 
-        // Send BOTH signals to guarantee delivery via Supabase Realtime and WS
-        wsRef.current.sendRaw({ type: 'GRANT_POLICE_ACCESS', alert_id: targetId });
-        wsRef.current.sendRaw({ type: 'POLICE_ACCESS_GRANTED', alert_id: targetId });
+        // Send BOTH signals to guarantee delivery via WS
+        wsRef.current?.sendRaw({ type: 'GRANT_POLICE_ACCESS', alert_id: targetId });
+        wsRef.current?.sendRaw({ type: 'POLICE_ACCESS_GRANTED', alert_id: targetId });
+
+        // Also broadcast via Supabase Realtime channel
+        try {
+            supabase.channel('shesafe_live_events').send({
+                type: 'broadcast',
+                event: 'POLICE_ACCESS_GRANTED',
+                payload: { alert_id: targetId },
+            }).catch(() => {});
+        } catch (_) {}
+
         setPoliceGranted(true);
         Alert.alert(
             '✅ Police Access Authorized',

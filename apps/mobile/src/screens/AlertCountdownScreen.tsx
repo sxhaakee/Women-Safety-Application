@@ -134,7 +134,7 @@ export default function AlertCountdownScreen({ navigation, route }: any) {
         try {
             secureResult = await verifySecurePin(entered);
         } catch (_) {}
-        const isMatch = (myPin && entered === myPin) || entered === '1234' || entered === '135790' || entered === '0000' || secureResult === 'normal' || !myPin;
+        const isMatch = myPin ? (entered === myPin) : false;
         const isDuress = entered === '246801' || entered === '9999' || secureResult === 'duress';
 
         if (isDuress) {
