@@ -23,8 +23,8 @@ const { width } = Dimensions.get('window');
 
 const ROLE_CONFIG = {
     victim: {
-        label: 'Priya (User)',
-        emoji: '🌸',
+        label: 'User',
+        emoji: '🛡️',
         color: '#E11D48',
         colorLight: '#FB7185',
         bg: ['#FFFFFF', '#FFF1F2', '#FDF2F8'] as const,
@@ -57,7 +57,7 @@ const ROLE_CONFIG = {
 };
 
 const QUICK_FILL = [
-    { label: '🌸 Priya (User)', user: 'victim@demo.shesafe',    pass: 'DemoOnly2024!', role: 'victim'    },
+    { label: '🛡️ User',        user: 'victim@demo.shesafe',    pass: 'DemoOnly2024!', role: 'victim'    },
     { label: '🛡️ Guardian',    user: 'guardian@demo.shesafe',  pass: 'DemoOnly2024!', role: 'guardian'  },
     { label: '👮 Police',      user: 'police@demo.shesafe',    pass: 'DemoOnly2024!', role: 'police'    },
     { label: '🤝 Rakshak',     user: 'volunteer@demo.shesafe', pass: 'DemoOnly2024!', role: 'volunteer' },
@@ -300,12 +300,19 @@ export default function LoginScreen({ navigation }: any) {
 
     useEffect(() => {
         const u = username.toLowerCase().trim();
-        setDetectedRole(
-            u.includes('victim') || u.includes('priya') || u.includes('she') ? 'victim' :
-            u.includes('guardian') ? 'guardian' :
-            u.includes('police') ? 'police' :
-            u.includes('volunteer') || u.includes('rakshak') ? 'volunteer' : null
-        );
+        if (!u) {
+            setDetectedRole(null);
+        } else if (u === 'victim' || u === 'user' || u.startsWith('victim@') || u.startsWith('user@')) {
+            setDetectedRole('victim');
+        } else if (u === 'guardian' || u.startsWith('guardian@')) {
+            setDetectedRole('guardian');
+        } else if (u === 'police' || u.startsWith('police@')) {
+            setDetectedRole('police');
+        } else if (u === 'volunteer' || u === 'rakshak' || u.startsWith('volunteer@') || u.startsWith('rakshak@')) {
+            setDetectedRole('volunteer');
+        } else {
+            setDetectedRole(null);
+        }
         setError('');
     }, [username]);
 
@@ -412,7 +419,7 @@ export default function LoginScreen({ navigation }: any) {
                                     style={styles.inputText}
                                     value={username}
                                     onChangeText={setUsername}
-                                    placeholder="priya / guardian / police"
+                                    placeholder="user / guardian / police"
                                     placeholderTextColor="#94A3B8"
                                     autoCapitalize="none"
                                     autoCorrect={false}
