@@ -55,10 +55,10 @@ const SafeMapView = ({ children, style, region, initialRegion }: SafeMapViewProp
         }
     });
 
-    const mapId = `osm-map-${Math.random().toString(36).substring(2, 9)}`;
-
-    // Build self-contained Leaflet / OpenStreetMap interactive HTML
-    const iframeHtml = `
+    // Stable iframe content based on coordinate keys (avoids reloading on identical state)
+    const latRounded = Number(lat).toFixed(4);
+    const lngRounded = Number(lng).toFixed(4);
+    const iframeHtml = React.useMemo(() => `
 <!DOCTYPE html>
 <html>
 <head>
@@ -117,7 +117,7 @@ const SafeMapView = ({ children, style, region, initialRegion }: SafeMapViewProp
   </script>
 </body>
 </html>
-    `;
+    `, [latRounded, lngRounded, JSON.stringify(markers.map(m => m.color)), polylines.length]);
 
     return (
         <View style={[styles.container, style]}>

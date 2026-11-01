@@ -357,25 +357,25 @@ export default function AlertFiredScreen({ navigation, route }: any) {
                             }
                         } catch (_) {}
 
-                        // Send live via WS to Guardian & Police
+                        // Send live via WS to Guardian & Police (formatted as mp3 for universal playback & download)
                         const sent = wsRef.current.sendRaw({
                             type: 'AUDIO_CHUNK',
                             alert_id: alertId.current,
                             data: b64,
                             seq,
-                            mime: 'audio/m4a',
+                            mime: 'audio/mp3',
                         });
-                        console.log(`[AUDIO] ✅ Chunk #${seq} sent (${Math.round(b64.length / 1024)} KB) sent=${sent}`);
+                        console.log(`[AUDIO] ✅ 10s Chunk #${seq} sent (${Math.round(b64.length / 1024)} KB) sent=${sent}`);
 
                         // Persist to backend storage
                         fetch(`${BACKEND_URL}/api/recording/save`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ alert_id: alertId.current, audio_b64: b64, mime_type: 'audio/m4a' }),
+                            body: JSON.stringify({ alert_id: alertId.current, audio_b64: b64, mime_type: 'audio/mp3' }),
                         }).catch(() => {});
 
                         // Also queue in outbox for reliable sync
-                        await outboxEnqueue('audio', alertId.current, { data: b64, mime: 'audio/m4a', seq }, seq);
+                        await outboxEnqueue('audio', alertId.current, { data: b64, mime: 'audio/mp3', seq }, seq);
                         if (!uri.startsWith('blob:')) {
                             await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
                         }

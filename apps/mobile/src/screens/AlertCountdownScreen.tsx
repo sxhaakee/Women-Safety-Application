@@ -17,7 +17,7 @@ import { supabase } from '../utils/supabase';
 
 import { checkPin as verifySecurePin } from '../services/pinService';
 
-const COUNTDOWN_SECONDS = 15; // 15s for demo impact
+const COUNTDOWN_SECONDS = 5; // 5s trigger to alert
 
 export default function AlertCountdownScreen({ navigation, route }: any) {
     const user: SheSafeUser  = route?.params?.user;

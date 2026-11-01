@@ -177,21 +177,20 @@ export default function PoliceDashboard({ navigation, route }: any) {
                     break;
 
                 case 'AUDIO_CHUNK':
-                    console.log(`[POLICE WS ${et}] 🎤 Audio chunk #${msg.seq} (${Math.round(msg.data.length / 1024)} KB)`);
-                    audioChunksRef.current.push({ data: msg.data, mime: msg.mime, seq: msg.seq });
+                    console.log(`[POLICE WS ${et}] 🎤 Audio chunk #${msg.seq} (${Math.round((msg.data?.length || 0) / 1024)} KB)`);
+                    audioChunksRef.current.push({ data: msg.data, mime: msg.mime || 'audio/mp3', seq: msg.seq });
                     setAudioChunkCount(c => c + 1);
-                    setAudioLevel(prev => [...prev.slice(-14), Math.min(msg.data.length / 5000, 100)]);
+                    setAudioLevel(prev => [...prev.slice(-14), Math.min((msg.data?.length || 0) / 5000, 100)]);
 
-                    // Auto-download to browser Downloads folder on Web
-                    triggerBrowserDownload(`data:${msg.mime || 'audio/m4a'};base64,${msg.data}`, `SheSafe_Police_Audio_${msg.seq}_${Date.now()}.m4a`);
+                    // Auto-download as MP3 to browser Downloads folder on Web
+                    triggerBrowserDownload(`data:${msg.mime || 'audio/mp3'};base64,${msg.data}`, `SheSafe_Police_Audio_${msg.seq}_${Date.now()}.mp3`);
 
                     // Auto-download incoming audio to police storage on Native
                     (async () => {
                         try {
-                            const ext = msg.mime?.includes('wav') ? '.wav' : '.m4a';
                             const baseDir = FileSystem.documentDirectory || FileSystem.cacheDirectory;
                             if (baseDir) {
-                                const autoUri = `${baseDir}SheSafe_Police_Audio_${msg.seq}_${Date.now()}${ext}`;
+                                const autoUri = `${baseDir}SheSafe_Police_Audio_${msg.seq}_${Date.now()}.mp3`;
                                 await FileSystem.writeAsStringAsync(autoUri, msg.data, { encoding: FileSystem.EncodingType.Base64 });
                             }
                             setAutoSavedAudioCount(c => c + 1);
@@ -200,9 +199,9 @@ export default function PoliceDashboard({ navigation, route }: any) {
 
                     if (!accessGrantedRef.current) {
                         console.log(`[POLICE WS ${et}] ⏳ Pre-buffering audio chunk #${msg.seq} until guardian authorizes`);
-                        bufferedAudioBeforeGrantRef.current.push({ data: msg.data, mime: msg.mime, seq: msg.seq });
+                        bufferedAudioBeforeGrantRef.current.push({ data: msg.data, mime: msg.mime || 'audio/mp3', seq: msg.seq });
                     } else {
-                        enqueueAudio(msg.data, msg.mime);
+                        enqueueAudio(msg.data, msg.mime || 'audio/mp3');
                     }
                     break;
 

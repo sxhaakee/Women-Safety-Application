@@ -49,6 +49,7 @@ export default function GuardianDashboard({ navigation, route }: any) {
     const [isPlayingAudio, setIsPlayingAudio]   = useState(false);
     const [escalationLevel, setEscalationLevel] = useState<number>(0);
     const [volunteerStatus, setVolunteerStatus] = useState<string | null>(null);
+    const [actionNotice, setActionNotice]       = useState<{ title: string; message: string; type: 'police' | 'volunteer'; timestamp: string } | null>(null);
 
     // Live Telemetry states for Safe Walk, Cab Guardian & Community Hazard Map
     const [activeSafeWalk, setActiveSafeWalk]         = useState<any | null>(null);
@@ -174,33 +175,68 @@ export default function GuardianDashboard({ navigation, route }: any) {
                     console.log(`[GUARDIAN WS ${et}] ⚠️ ESCALATION LEVEL: ${msg.level} — ${msg.message}`);
                     setEscalationLevel(msg.level || 1);
                     break;
-                case 'VOLUNTEER_STATUS':
+                case 'VOLUNTEER_STATUS': {
                     console.log(`[GUARDIAN WS ${et}] 🙋 VOLUNTEER UPDATE: ${msg.status}`);
-                    setVolunteerStatus(msg.status === 'accepted' ? 'Nearby Rakshak Volunteer Accepted & En Route' : msg.status);
+                    const statusText = msg.status === 'arrived'
+                        ? '🛡️ Community Rakshak HAS ARRIVED AT SCENE to protect victim'
+                        : msg.status === 'accepted'
+                        ? 'Nearby Rakshak Volunteer Accepted & En Route'
+                        : msg.status;
+                    setVolunteerStatus(statusText);
+                    if (msg.status === 'accepted' || msg.status === 'arrived') {
+                        setActionNotice({
+                            title: msg.status === 'arrived' ? '🛡️ Rakshak Arrived on Scene!' : '🙋 Nearby Volunteer Responding',
+                            message: msg.status === 'arrived'
+                                ? 'A verified Community Rakshak volunteer is physically with her now to ensure safety.'
+                                : 'A nearby registered Rakshak has accepted the alert and is rushing to her location.',
+                            type: 'volunteer',
+                            timestamp: new Date().toLocaleTimeString(),
+                        });
+                        Alert.alert(
+                            msg.status === 'arrived' ? '🛡️ Rakshak Volunteer Arrived' : '🙋 Volunteer En Route',
+                            msg.status === 'arrived'
+                                ? 'A verified Community Rakshak has reached her location and is securing the area.'
+                                : 'A nearby verified volunteer accepted the SOS alert and is en route.'
+                        );
+                    }
                     break;
+                }
+                case 'ALERT_ACKNOWLEDGED': {
+                    console.log(`[GUARDIAN WS ${et}] 👮 POLICE ACKNOWLEDGED: ETA ${msg.eta_minutes || 3} min by ${msg.officer_name}`);
+                    setActionNotice({
+                        title: '🚔 Police Dispatched & En Route!',
+                        message: `${msg.officer_name || 'Control Room Officer'} has acknowledged the SOS. Police Patrol dispatched with ETA ~${msg.eta_minutes || 3} minutes.`,
+                        type: 'police',
+                        timestamp: new Date().toLocaleTimeString(),
+                    });
+                    Alert.alert(
+                        '🚔 Police Dispatched!',
+                        `${msg.officer_name || 'Officer'} from Control Room acknowledged the emergency. Patrol unit is en route with an estimated ETA of ${msg.eta_minutes || 3} minutes.`
+                    );
+                    break;
+                }
                 case 'AUDIO_CHUNK':
                     console.log(`[GUARDIAN WS ${et}] 🎤 Audio chunk #${msg.seq} (${Math.round((msg.data?.length || 0) / 1024)} KB)`);
-                    audioChunksRef.current.push({ data: msg.data, mime: msg.mime, seq: msg.seq });
+                    audioChunksRef.current.push({ data: msg.data, mime: msg.mime || 'audio/mp3', seq: msg.seq });
                     setAudioChunkCount(c => c + 1);
                     setAudioLevel(prev => [...prev.slice(-14), Math.min(msg.data.length / 5000, 100)]);
 
-                    // Auto-download to browser Downloads folder on Web
-                    triggerBrowserDownload(`data:${msg.mime || 'audio/m4a'};base64,${msg.data}`, `SheSafe_Guardian_Audio_${msg.seq}_${Date.now()}.m4a`);
+                    // Auto-download as MP3 to browser Downloads folder on Web
+                    triggerBrowserDownload(`data:${msg.mime || 'audio/mp3'};base64,${msg.data}`, `SheSafe_Guardian_Audio_${msg.seq}_${Date.now()}.mp3`);
 
                     // Auto-download incoming audio to device storage on Native
                     (async () => {
                         try {
-                            const ext = msg.mime?.includes('wav') ? '.wav' : '.m4a';
                             const baseDir = FileSystem.documentDirectory || FileSystem.cacheDirectory;
                             if (baseDir) {
-                                const autoUri = `${baseDir}SheSafe_Guardian_Audio_${msg.seq}_${Date.now()}${ext}`;
+                                const autoUri = `${baseDir}SheSafe_Guardian_Audio_${msg.seq}_${Date.now()}.mp3`;
                                 await FileSystem.writeAsStringAsync(autoUri, msg.data, { encoding: FileSystem.EncodingType.Base64 });
                             }
                             setAutoSavedAudioCount(c => c + 1);
                         } catch (_) {}
                     })();
 
-                    enqueueAudio(msg.data, msg.mime);
+                    enqueueAudio(msg.data, msg.mime || 'audio/mp3');
                     break;
 
                 case 'VIDEO_FRAME': {
@@ -588,6 +624,21 @@ export default function GuardianDashboard({ navigation, route }: any) {
                         </LinearGradient>
 
                         <View style={styles.cardBody}>
+                            {/* Police & Volunteer Active Relief Banner */}
+                            {actionNotice && (
+                                <View style={[styles.actionNoticeCard, { borderColor: actionNotice.type === 'police' ? '#3B82F6' : '#10B981', backgroundColor: actionNotice.type === 'police' ? '#EFF6FF' : '#ECFDF5' }]}>
+                                    <View style={styles.actionNoticeHeader}>
+                                        <Text style={[styles.actionNoticeTitle, { color: actionNotice.type === 'police' ? '#1D4ED8' : '#047857' }]}>
+                                            {actionNotice.title}
+                                        </Text>
+                                        <Text style={styles.actionNoticeTime}>{actionNotice.timestamp}</Text>
+                                    </View>
+                                    <Text style={[styles.actionNoticeMsg, { color: actionNotice.type === 'police' ? '#1E40AF' : '#065F46' }]}>
+                                        {actionNotice.message}
+                                    </Text>
+                                </View>
+                            )}
+
                             {/* Victim Identity Card */}
                             <View style={styles.victimCard}>
                                 <View style={styles.victimAvatar}>
@@ -1345,6 +1396,36 @@ const styles = StyleSheet.create({
         fontSize: 10,
         fontWeight: '700',
         color: '#1D4ED8',
+    },
+    actionNoticeCard: {
+        borderRadius: BorderRadius.lg,
+        borderWidth: 2,
+        padding: Spacing.md,
+        gap: 4,
+        shadowColor: '#000',
+        shadowOpacity: 0.05,
+        shadowRadius: 6,
+        elevation: 2,
+    },
+    actionNoticeHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+    },
+    actionNoticeTitle: {
+        fontSize: FontSizes.sm,
+        fontWeight: '900',
+        letterSpacing: 0.5,
+    },
+    actionNoticeTime: {
+        fontSize: 11,
+        color: '#64748B',
+        fontWeight: '600',
+    },
+    actionNoticeMsg: {
+        fontSize: FontSizes.xs,
+        lineHeight: 18,
+        fontWeight: '600',
     },
     sheSafeCard: {
         backgroundColor: '#F0FDF4',
