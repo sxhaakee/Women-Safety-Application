@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
+import * as Crypto from 'expo-crypto';
 import { supabase } from './supabase';
 
 function getHostIp(): string {
@@ -177,34 +178,36 @@ export async function fireAlert(params: {
         console.warn(`[DEBUG ALERT ${time}] ⚠️ Backend fireAlert fetch error: ${e?.message || e}`);
     }
 
-    // Mirror to Supabase shesafe_alerts
+    // Mirror to Supabase alerts table
     try {
-        const { data: sbRow, error: sbErr } = await supabase.from('shesafe_alerts').insert({
-            victim_name: params.victim_name,
-            victim_phone: params.victim_phone,
+        const uuid = Crypto.randomUUID();
+        const { data: sbRow, error: sbErr } = await supabase.from('alerts').insert({
+            id: uuid,
+            victim_id: (params.victim_id && params.victim_id.length > 20) ? params.victim_id : 'b247222f-6b5c-48c7-907c-852a49f1bd97',
             status: 'active',
-            lat: params.lat,
-            lng: params.lng,
-            address: params.address || 'Location tracking active',
-            triggered_at: new Date().toISOString(),
+            trigger: 'manual_sos',
+            confidence: 1,
+            risk_score: 85,
+            started_at: new Date().toISOString(),
+            fired_at: new Date().toISOString(),
         }).select().single();
 
         if (sbRow && !alertData) {
             alertData = {
                 id: sbRow.id,
                 victim_id: sbRow.victim_id || params.victim_id,
-                victim_name: sbRow.victim_name || params.victim_name,
-                victim_phone: sbRow.victim_phone || params.victim_phone,
+                victim_name: params.victim_name || 'Priya Sharma',
+                victim_phone: params.victim_phone || '+91 98765 43210',
                 status: 'active',
-                lat: sbRow.lat ?? params.lat,
-                lng: sbRow.lng ?? params.lng,
-                address: sbRow.address ?? params.address,
-                triggered_at: sbRow.triggered_at || new Date().toISOString(),
+                lat: params.lat,
+                lng: params.lng,
+                address: params.address || 'Location tracking active',
+                triggered_at: sbRow.fired_at || new Date().toISOString(),
                 resolved_at: null,
             };
         }
     } catch (e: any) {
-        console.warn(`[DEBUG ALERT ${time}] ⚠️ Supabase shesafe_alerts insert error:`, e?.message);
+        console.warn(`[DEBUG ALERT ${time}] ⚠️ Supabase alerts insert error:`, e?.message);
     }
 
     return alertData;
@@ -239,21 +242,14 @@ export async function resolveAlert(alert_id?: string) {
         console.error(`[DEBUG ALERT ${time}] 💥 Resolve Alert FETCH ERROR: ${e?.message || e}`);
     }
 
-    // Mirror resolution in Supabase shesafe_alerts
+    // Mirror resolution in Supabase alerts table
     try {
-        if (alert_id && alert_id.length > 20) {
-            await supabase.from('shesafe_alerts').update({
-                status: 'resolved',
-                resolved_at: new Date().toISOString(),
-            }).eq('id', alert_id);
-        } else {
-            await supabase.from('shesafe_alerts').update({
-                status: 'resolved',
-                resolved_at: new Date().toISOString(),
-            }).eq('status', 'active');
-        }
+        await supabase.from('alerts').update({
+            status: 'resolved',
+            resolved_at: new Date().toISOString(),
+        }).eq('status', 'active');
     } catch (e: any) {
-        console.warn(`[DEBUG ALERT ${time}] ⚠️ Supabase shesafe_alerts resolve error:`, e?.message);
+        console.warn(`[DEBUG ALERT ${time}] ⚠️ Supabase alerts resolve error:`, e?.message);
     }
 }
 
@@ -261,13 +257,13 @@ function mapSupabaseAlert(row: any): SheSafeAlert {
     return {
         id: row.id,
         victim_id: row.victim_id || 'victim-001',
-        victim_name: row.victim_name || 'Priya Sharma',
-        victim_phone: row.victim_phone || '+91 98765 43210',
+        victim_name: 'Priya Sharma',
+        victim_phone: '+91 98765 43210',
         status: row.status === 'active' ? 'active' : 'resolved',
-        lat: row.lat || 12.9141,
-        lng: row.lng || 74.8560,
-        address: row.address || 'Mangaluru Central',
-        triggered_at: row.triggered_at || new Date().toISOString(),
+        lat: 12.9141,
+        lng: 74.8560,
+        address: 'Near Mangaluru Central',
+        triggered_at: row.started_at || row.fired_at || row.created_at || new Date().toISOString(),
         resolved_at: row.resolved_at || null,
     };
 }
@@ -279,7 +275,7 @@ export async function getActiveAlerts(): Promise<SheSafeAlert[]> {
         const res = await fetch(`${BACKEND_URL}/api/alerts/active`);
         if (res.ok) {
             const data = await res.json();
-            if (Array.isArray(data.alerts)) {
+            if (Array.isArray(data.alerts) && data.alerts.length > 0) {
                 return data.alerts.filter((a: any) => a.status === 'active');
             }
         }
@@ -287,15 +283,15 @@ export async function getActiveAlerts(): Promise<SheSafeAlert[]> {
         // Fallback to Supabase if backend unreachable
     }
 
-    // 2. Check Supabase shesafe_alerts
+    // 2. Check Supabase alerts table
     try {
         const { data, error } = await supabase
-            .from('shesafe_alerts')
+            .from('alerts')
             .select('*')
             .eq('status', 'active')
-            .order('triggered_at', { ascending: false });
+            .order('created_at', { ascending: false });
 
-        if (!error && Array.isArray(data)) {
+        if (!error && Array.isArray(data) && data.length > 0) {
             return data.map(mapSupabaseAlert);
         }
     } catch {
@@ -319,9 +315,9 @@ export async function getAllAlerts(): Promise<SheSafeAlert[]> {
 
     try {
         const { data, error } = await supabase
-            .from('shesafe_alerts')
+            .from('alerts')
             .select('*')
-            .order('triggered_at', { ascending: false });
+            .order('created_at', { ascending: false });
 
         if (!error && Array.isArray(data)) {
             return data.map(mapSupabaseAlert);
@@ -428,7 +424,7 @@ export class SheSafeWS {
                 .channel('shesafe_live_room', {
                     config: { broadcast: { ack: false, self: true } },
                 })
-                .on('postgres_changes', { event: '*', schema: 'public', table: 'shesafe_alerts' }, (payload) => {
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'alerts' }, (payload) => {
                     const row = payload.new as any;
                     if (row) {
                         const alert = mapSupabaseAlert(row);

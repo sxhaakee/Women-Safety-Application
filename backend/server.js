@@ -15,6 +15,17 @@ const http    = require('http');
 const WebSocket = require('ws');
 const fs      = require('fs');
 const path    = require('path');
+const crypto  = require('crypto');
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
+const { createClient } = require('@supabase/supabase-js');
+
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://bydbovjgrvfecojlkkfm.supabase.co';
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey, {
+    auth: { persistSession: false },
+    realtime: { transport: WebSocket }
+}) : null;
+if (supabase) console.log('✅ Supabase Client initialized in backend with Service Role');
 
 const app = express();
 app.use(cors());
@@ -556,6 +567,23 @@ app.post('/api/alert/fire', (req, res) => {
         startEscalation(alert);
     }
 
+    // Sync with Supabase alerts table
+    if (supabase) {
+        try {
+            supabase.from('alerts').insert({
+                id: crypto.randomUUID(),
+                victim_id: victim_id || 'b247222f-6b5c-48c7-907c-852a49f1bd97',
+                status: 'active',
+                trigger: 'manual_sos',
+                confidence: 1,
+                risk_score: 85,
+                duress: !!duress,
+                started_at: new Date().toISOString(),
+                fired_at: new Date().toISOString(),
+            }).catch(err => console.warn('[SUPABASE FIRE SYNC ERROR]', err?.message));
+        } catch (_) {}
+    }
+
     res.json({ success: true, alert });
 });
 
@@ -593,20 +621,43 @@ app.post('/api/alert/acknowledge', (req, res) => {
     res.json({ success: true });
 });
 
-app.post('/api/alert/resolve', (req, res) => {
+app.post('/api/alert/resolve', async (req, res) => {
     const { alert_id } = req.body;
-    const alert = alerts.find(a => a.id === alert_id) || alerts.find(a => a.status === 'active');
-    if (alert) {
-        alert.status = 'resolved';
-        alert.resolved_at = new Date().toISOString();
-        stopEscalation(alert.id);
-        broadcastAll({ type: 'ALERT_RESOLVED', alert_id: alert.id, alert });
-    } else {
-        broadcastAll({ type: 'ALERT_RESOLVED', alert_id: alert_id || 'ALERT-0001', alert: { id: alert_id || 'ALERT-0001', status: 'resolved' } });
+    let resolvedAlert = null;
+    alerts.forEach(a => {
+        if (!alert_id || a.id === alert_id || a.status === 'active') {
+            a.status = 'resolved';
+            a.resolved_at = new Date().toISOString();
+            stopEscalation(a.id);
+            if (!resolvedAlert) resolvedAlert = a;
+        }
+    });
+
+    if (!resolvedAlert) {
+        resolvedAlert = { id: alert_id || 'ALERT-0001', status: 'resolved', victim_name: 'Priya Sharma' };
     }
+
+    // Mirror to Supabase alerts table
+    if (supabase) {
+        try {
+            await supabase.from('alerts').update({
+                status: 'resolved',
+                resolved_at: new Date().toISOString(),
+            }).eq('status', 'active');
+        } catch (err) {
+            console.warn('[SUPABASE RESOLVE SYNC ERROR]', err?.message);
+        }
+    }
+
     const t = new Date().toLocaleTimeString();
-    console.log(`[RESOLVE ${t}] ✅ Alert ${alert?.id || alert_id || 'active'} resolved and broadcasted to all`);
-    res.json({ success: true, alert: alert || null });
+    console.log(`[RESOLVE ${t}] ✅ Alert ${resolvedAlert.id} resolved and broadcasted to all sockets`);
+    broadcastAll({
+        type: 'ALERT_RESOLVED',
+        alert_id: resolvedAlert.id,
+        victim_name: resolvedAlert.victim_name || 'Priya Sharma',
+        alert: resolvedAlert,
+    });
+    res.json({ success: true, alert: resolvedAlert });
 });
 
 // Safe Walk & Cab & Hazard REST endpoints
@@ -771,13 +822,23 @@ app.get('/api/report/:alertId', (req, res) => {
     });
 });
 
-app.post('/api/reset', (req, res) => {
+app.post('/api/reset', async (req, res) => {
     Object.keys(escalationTimers).forEach(id => stopEscalation(id));
     alerts = [];
     alertIdCounter = 1;
     Object.keys(policeAccessGrants).forEach(k => delete policeAccessGrants[k]);
     Object.keys(audioChunkBuffer).forEach(k => delete audioChunkBuffer[k]);
     Object.keys(videoFrameBuffer).forEach(k => delete videoFrameBuffer[k]);
+    activeSafeWalk = null;
+    activeCabRide = null;
+    if (supabase) {
+        try {
+            await supabase.from('alerts').update({
+                status: 'resolved',
+                resolved_at: new Date().toISOString(),
+            }).eq('status', 'active');
+        } catch (_) {}
+    }
     broadcastAll({ type: 'RESET' });
     console.log('[RESET] 🔄 All state cleared');
     res.json({ success: true });

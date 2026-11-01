@@ -138,3 +138,4 @@ describe('SheSafe ML Safety Engine', () => {
     expect(result.evaluatedRoutes.find(r => r.id === 'r1')!.hazardCollisions.length).toBeGreaterThanOrEqual(1);
   });
 });
+

@@ -366,3 +366,4 @@ export function findSafestRouteWithHazardAvoidance(
     avoidedHazardsCount: Math.max(0, avoidedCount),
   };
 }
+

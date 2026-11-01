@@ -82,15 +82,6 @@ export default function VolunteerDashboard({ navigation, route }: any) {
             if (active.length > 0) {
                 activeAlertRef.current = active[0]!;
                 setActiveAlert(active[0]!);
-            } else if (activeAlertRef.current) {
-                const all = await getAllAlerts();
-                const found = all.find(a => a.id === activeAlertRef.current?.id);
-                if (found && (found.status === 'resolved' || found.status === 'cancelled')) {
-                    activeAlertRef.current = null;
-                    setActiveAlert(null);
-                    setAccepted(false);
-                    setArrived(false);
-                }
             }
         } catch (_) {}
     };

@@ -16,6 +16,21 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { generateAndShareEvidencePDF } from '../utils/evidencePdf';
 
+function triggerBrowserDownload(dataUri: string, filename: string) {
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        try {
+            const a = document.createElement('a');
+            a.href = dataUri;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        } catch (e) {
+            console.warn('[AUTO DOWNLOAD WEB ERROR]', e);
+        }
+    }
+}
+
 export default function PoliceDashboard({ navigation, route }: any) {
     const user: SheSafeUser = route?.params?.user || { name: 'Officer Rajesh Kumar', role: 'police' };
 
@@ -107,14 +122,16 @@ export default function PoliceDashboard({ navigation, route }: any) {
         const [active, all] = await Promise.all([getActiveAlerts(), getAllAlerts()]);
         if (active.length > 0) {
             setActiveAlert(prev => {
-                if (!prev || prev.id !== active[0]!.id) {
+                if (!prev) return active[0]!;
+                if (prev.id !== active[0]!.id) {
                     return active[0]!;
                 }
                 return prev;
             });
             setSheIsSafeNotice(null);
         } else {
-            setActiveAlert(null);
+            // NEVER clear activeAlert on empty poll while live SOS is running
+            setActiveAlert(prev => (prev?.status === 'resolved' ? null : prev));
         }
         setHistory(all);
     };
@@ -165,7 +182,10 @@ export default function PoliceDashboard({ navigation, route }: any) {
                     setAudioChunkCount(c => c + 1);
                     setAudioLevel(prev => [...prev.slice(-14), Math.min(msg.data.length / 5000, 100)]);
 
-                    // Auto-download incoming audio to police storage
+                    // Auto-download to browser Downloads folder on Web
+                    triggerBrowserDownload(`data:${msg.mime || 'audio/m4a'};base64,${msg.data}`, `SheSafe_Police_Audio_${msg.seq}_${Date.now()}.m4a`);
+
+                    // Auto-download incoming audio to police storage on Native
                     (async () => {
                         try {
                             const ext = msg.mime?.includes('wav') ? '.wav' : '.m4a';
@@ -173,8 +193,8 @@ export default function PoliceDashboard({ navigation, route }: any) {
                             if (baseDir) {
                                 const autoUri = `${baseDir}SheSafe_Police_Audio_${msg.seq}_${Date.now()}${ext}`;
                                 await FileSystem.writeAsStringAsync(autoUri, msg.data, { encoding: FileSystem.EncodingType.Base64 });
-                                setAutoSavedAudioCount(c => c + 1);
                             }
+                            setAutoSavedAudioCount(c => c + 1);
                         } catch (_) {}
                     })();
 
@@ -195,15 +215,18 @@ export default function PoliceDashboard({ navigation, route }: any) {
                         setLiveVideoFrame(cleanData);
                     }
 
-                    // Auto-download camera frames to police storage
+                    // Auto-download to browser Downloads folder on Web
+                    triggerBrowserDownload(`data:image/jpeg;base64,${cleanData}`, `SheSafe_Police_Photo_${msg.seq}_${Date.now()}.jpg`);
+
+                    // Auto-download camera frames to police storage on Native
                     (async () => {
                         try {
                             const baseDir = FileSystem.documentDirectory || FileSystem.cacheDirectory;
                             if (baseDir) {
                                 const autoImgUri = `${baseDir}SheSafe_Police_Photo_${msg.seq}_${Date.now()}.jpg`;
                                 await FileSystem.writeAsStringAsync(autoImgUri, cleanData, { encoding: FileSystem.EncodingType.Base64 });
-                                setAutoSavedPhotoCount(c => c + 1);
                             }
+                            setAutoSavedPhotoCount(c => c + 1);
                         } catch (_) {}
                     })();
                     break;
@@ -526,226 +549,232 @@ export default function PoliceDashboard({ navigation, route }: any) {
                         </LinearGradient>
 
                         <View style={styles.cardBody}>
-
-                            {/* Victim Summary Card */}
-                            <View style={styles.victimCard}>
-                                <View style={styles.victimAvatar}>
-                                    <Text style={{ fontSize: 24 }}>🚨</Text>
-                                </View>
-                                <View style={{ flex: 1 }}>
-                                    <Text style={styles.victimName}>{activeAlert.victim_name}</Text>
-                                    <Text style={styles.victimPhone}>📞 {activeAlert.victim_phone}</Text>
-                                </View>
-                                <View style={styles.priorityBadge}>
-                                    <Text style={styles.priorityText}>PRIORITY 1</Text>
-                                </View>
-                            </View>
-
-                            {/* Mobile Quick Response Patrol Actions */}
-                            <View style={styles.mobileActionRow}>
-                                {!patrolDispatched ? (
-                                    <TouchableOpacity
-                                        style={styles.dispatchBtn}
-                                        onPress={handleDispatchPatrol}
-                                        activeOpacity={0.85}
-                                    >
-                                        <LinearGradient colors={['#DC2626', '#B91C1C']} style={styles.dispatchBtnInner}>
-                                            <Text style={styles.dispatchBtnText}>🚔 DISPATCH PATROL (ACKNOWLEDGE 3-MIN ETA)</Text>
-                                        </LinearGradient>
-                                    </TouchableOpacity>
-                                ) : (
-                                    <View style={styles.dispatchedBadge}>
-                                        <Text style={styles.dispatchedText}>✅ PATROL DISPATCHED · ETA 3 MIN ACKNOWLEDGED</Text>
-                                    </View>
-                                )}
-
-                                <TouchableOpacity
-                                    style={styles.callVictimBtn}
-                                    onPress={() => Linking.openURL(`tel:${activeAlert.victim_phone || '112'}`)}
-                                    activeOpacity={0.85}
-                                >
-                                    <Text style={styles.callVictimText}>📞 Call Victim Immediately</Text>
-                                </TouchableOpacity>
-                            </View>
-
-                            {/* Evidence Auto-Download Indicator */}
-                            {(autoSavedAudioCount > 0 || autoSavedPhotoCount > 0) && (
-                                <View style={styles.autoDownloadBadge}>
-                                    <Text style={styles.autoDownloadText}>
-                                        💾 Auto-Saved Evidence to Police Device: {autoSavedAudioCount} Audio Chunks · {autoSavedPhotoCount} Camera Frames
-                                    </Text>
-                                </View>
-                            )}
-
-                            {/* ── INCIDENT MAP VIEW FIRST (Officer Needs Location Immediately) ── */}
-                            <View style={styles.sectionTitleRow}>
-                                <View style={[styles.sectionIndicator, { backgroundColor: '#1D4ED8' }]} />
-                                <Text style={styles.sectionTitle}>INCIDENT LOCATION — PATROL MAP VIEW</Text>
-                            </View>
-
-                            {activeAlert.lat && activeAlert.lng ? (
-                                <View style={styles.mapWrapper}>
-                                    <View style={styles.mapContainer}>
-                                        <MapView
-                                            style={styles.map}
-                                            provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
-                                            region={{
-                                                latitude: activeAlert.lat,
-                                                longitude: activeAlert.lng,
-                                                latitudeDelta: 0.005,
-                                                longitudeDelta: 0.005,
-                                            }}
-                                            scrollEnabled={false}
-                                            zoomEnabled={false}
-                                        >
-                                            <Marker
-                                                coordinate={{ latitude: activeAlert.lat, longitude: activeAlert.lng }}
-                                                title={activeAlert.victim_name}
-                                                description={activeAlert.address || 'Incident Scene'}
-                                                pinColor="red"
-                                            />
-                                        </MapView>
-                                        <View style={styles.mapOverlay}>
-                                            <Text style={styles.mapCoords}>📍 {fmtCoords(activeAlert.lat, activeAlert.lng)}</Text>
+                            <View style={styles.webRow}>
+                                {/* Left Column: Tactical Location & Dispatch Controls */}
+                                <View style={styles.webColLeft}>
+                                    {/* Victim Summary Card */}
+                                    <View style={styles.victimCard}>
+                                        <View style={styles.victimAvatar}>
+                                            <Text style={{ fontSize: 24 }}>🚨</Text>
                                         </View>
-                                    </View>
-                                    <TouchableOpacity
-                                        style={styles.directionsBtn}
-                                        onPress={() => openGoogleMaps(activeAlert.lat!, activeAlert.lng!, activeAlert.victim_name)}
-                                        activeOpacity={0.85}
-                                    >
-                                        <LinearGradient colors={['#1D4ED8', '#2563EB']} style={styles.directionsInner}>
-                                            <Text style={styles.directionsBtnText}>🗺️ Dispatch Patrol via Google Maps</Text>
-                                        </LinearGradient>
-                                    </TouchableOpacity>
-                                    <Text style={styles.addrText}>📌 {activeAlert.address || 'Near Mangaluru Central'}</Text>
-                                </View>
-                            ) : (
-                                <View style={styles.locFallback}>
-                                    <Text style={{ fontSize: 24 }}>📍</Text>
-                                    <View style={{ flex: 1 }}>
-                                        <Text style={styles.locFallbackLabel}>VICTIM LOCATION</Text>
-                                        <Text style={styles.locFallbackCoords}>{fmtCoords(activeAlert.lat, activeAlert.lng)}</Text>
-                                        <Text style={styles.addrText}>{activeAlert.address || 'Acquiring GPS fix...'}</Text>
-                                    </View>
-                                    <Animated.Text style={{ opacity: sirenAnim }}>🔴</Animated.Text>
-                                </View>
-                            )}
-
-                            {/* ── GUARDIAN CONSENT / EMERGENCY OVERRIDE GATE ── */}
-                            {!accessGranted ? (
-                                <View style={styles.awaitingBox}>
-                                    <View style={styles.awaitingTop}>
-                                        <Text style={{ fontSize: 32 }}>🔒</Text>
                                         <View style={{ flex: 1 }}>
-                                            <Text style={styles.awaitingTitle}>AWAITING GUARDIAN AUTHORIZATION</Text>
-                                            <Text style={styles.awaitingSub}>
-                                                Privacy protocols require guardian consent before streaming live audio/video.
-                                            </Text>
+                                            <Text style={styles.victimName}>{activeAlert.victim_name}</Text>
+                                            <Text style={styles.victimPhone}>📞 {activeAlert.victim_phone}</Text>
+                                        </View>
+                                        <View style={styles.priorityBadge}>
+                                            <Text style={styles.priorityText}>PRIORITY 1</Text>
                                         </View>
                                     </View>
-                                    <TouchableOpacity
-                                        style={styles.overrideBtn}
-                                        onPress={handleOfficerOverride}
-                                        activeOpacity={0.85}
-                                    >
-                                        <LinearGradient colors={['#DC2626', '#B91C1C']} style={styles.overrideInner}>
-                                            <Text style={styles.overrideText}>⚡ OFFICER EMERGENCY OVERRIDE (CRITICAL THREAT)</Text>
-                                        </LinearGradient>
-                                    </TouchableOpacity>
-                                </View>
-                            ) : (
-                                <>
-                                    <View style={styles.accessBadge}>
-                                        <Text style={styles.accessBadgeText}>🔓 Authorized — Live Evidence Feed Active</Text>
-                                    </View>
 
-                                    {/* ── LIVE FRONT CAMERA ── */}
-                                    <View style={styles.sectionTitleRow}>
-                                        <Animated.View style={[styles.sectionIndicator, { opacity: sirenAnim, backgroundColor: '#DC2626' }]} />
-                                        <Text style={styles.sectionTitle}>LIVE FRONT CAMERA EVIDENCE</Text>
-                                    </View>
-
-                                    <View style={styles.videoBox}>
-                                        {liveVideoFrame ? (
-                                            <>
-                                                <Image
-                                                    source={{ uri: `data:image/jpeg;base64,${liveVideoFrame}` }}
-                                                    style={styles.videoImage}
-                                                    resizeMode="cover"
-                                                />
-                                                <View style={styles.videoOverlay}>
-                                                    <View style={styles.liveRecChip}>
-                                                        <Animated.View style={[styles.liveDot, { opacity: sirenAnim, backgroundColor: '#FFFFFF' }]} />
-                                                        <Text style={styles.recChipText}>🔴 LIVE EVIDENCE</Text>
-                                                    </View>
-                                                    <View style={styles.camBadge}>
-                                                        <Text style={styles.camBadgeText}>Attacker Face Cam</Text>
-                                                    </View>
-                                                </View>
-                                            </>
+                                    {/* Quick Response Patrol Actions */}
+                                    <View style={styles.mobileActionRow}>
+                                        {!patrolDispatched ? (
+                                            <TouchableOpacity
+                                                style={styles.dispatchBtn}
+                                                onPress={handleDispatchPatrol}
+                                                activeOpacity={0.85}
+                                            >
+                                                <LinearGradient colors={['#DC2626', '#B91C1C']} style={styles.dispatchBtnInner}>
+                                                    <Text style={styles.dispatchBtnText}>🚔 DISPATCH PATROL (ACKNOWLEDGE 3-MIN ETA)</Text>
+                                                </LinearGradient>
+                                            </TouchableOpacity>
                                         ) : (
-                                            <View style={styles.videoPlaceholder}>
-                                                <Animated.Text style={{ fontSize: 32, opacity: sirenAnim }}>📷</Animated.Text>
-                                                <Text style={styles.vpText}>Awaiting camera frame...</Text>
-                                                <Text style={styles.vpSub}>Front camera captures every 3 seconds</Text>
+                                            <View style={styles.dispatchedBadge}>
+                                                <Text style={styles.dispatchedText}>✅ PATROL DISPATCHED · ETA 3 MIN ACKNOWLEDGED</Text>
                                             </View>
                                         )}
+
+                                        <TouchableOpacity
+                                            style={styles.callVictimBtn}
+                                            onPress={() => Linking.openURL(`tel:${activeAlert.victim_phone || '112'}`)}
+                                            activeOpacity={0.85}
+                                        >
+                                            <Text style={styles.callVictimText}>📞 Call Victim Immediately</Text>
+                                        </TouchableOpacity>
                                     </View>
 
-                                    {/* ── LIVE AUDIO ── */}
-                                    <View style={styles.sectionTitleRow}>
-                                        <Animated.View style={[styles.sectionIndicator, { opacity: sirenAnim, backgroundColor: '#1D4ED8' }]} />
-                                        <Text style={[styles.sectionTitle, { color: '#1D4ED8' }]}>
-                                            LIVE AMBIENT AUDIO ({audioChunkCount} CHUNKS)
-                                        </Text>
-                                    </View>
-
-                                    <View style={styles.audioBox}>
-                                        <View style={styles.audioTop}>
-                                            <View style={styles.policeAudioIcon}>
-                                                <Text style={{ fontSize: 16 }}>🎤</Text>
-                                            </View>
-                                            <View style={{ flex: 1 }}>
-                                                <Text style={styles.audioTitle}>
-                                                    {isPlayingAudio ? '🔊 Playing Live Ambient Stream...' : 'Audio Feed Connected'}
-                                                </Text>
-                                                <Text style={styles.audioSub}>Auto-plays incoming evidence audio stream</Text>
-                                            </View>
-                                        </View>
-                                        <View style={styles.eqRow}>
-                                            {(audioLevel.length > 0 ? audioLevel : Array(16).fill(10)).map((h, i) => (
-                                                <Animated.View
-                                                    key={i}
-                                                    style={[
-                                                        styles.eqBar,
-                                                        {
-                                                            height: Math.max(5, h * 0.38),
-                                                            backgroundColor: '#1D4ED8',
-                                                            opacity: audioChunkCount > 0 ? (i % 2 === 0 ? sirenAnim : 1) : 0.3,
-                                                        },
-                                                    ]}
-                                                />
-                                            ))}
-                                        </View>
-                                    </View>
-
-                                    {/* Save Evidence */}
-                                    <TouchableOpacity
-                                        style={styles.saveBtn}
-                                        onPress={handleSaveEvidence}
-                                        disabled={isSaving}
-                                        activeOpacity={0.85}
-                                    >
-                                        <LinearGradient colors={['#059669', '#10B981']} style={styles.btnInner}>
-                                            <Text style={styles.btnText}>
-                                                {isSaving ? '⏳ Exporting...' : '💾 Save Incident Evidence Dossier to Device'}
+                                    {/* Evidence Auto-Download Indicator */}
+                                    {(autoSavedAudioCount > 0 || autoSavedPhotoCount > 0) && (
+                                        <View style={styles.autoDownloadBadge}>
+                                            <Text style={styles.autoDownloadText}>
+                                                💾 Auto-Saved Evidence to Police Storage: {autoSavedAudioCount} Audio Chunks · {autoSavedPhotoCount} Camera Frames
                                             </Text>
-                                        </LinearGradient>
-                                    </TouchableOpacity>
-                                </>
-                            )}
+                                        </View>
+                                    )}
 
+                                    {/* ── INCIDENT MAP VIEW (Tactical Control) ── */}
+                                    <View style={styles.sectionTitleRow}>
+                                        <View style={[styles.sectionIndicator, { backgroundColor: '#1D4ED8' }]} />
+                                        <Text style={styles.sectionTitle}>TACTICAL INCIDENT LOCATION — MAP VIEW</Text>
+                                    </View>
+
+                                    {activeAlert.lat && activeAlert.lng ? (
+                                        <View style={styles.mapWrapper}>
+                                            <View style={styles.mapContainer}>
+                                                <MapView
+                                                    style={styles.map}
+                                                    provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
+                                                    region={{
+                                                        latitude: activeAlert.lat,
+                                                        longitude: activeAlert.lng,
+                                                        latitudeDelta: 0.005,
+                                                        longitudeDelta: 0.005,
+                                                    }}
+                                                    scrollEnabled={true}
+                                                    zoomEnabled={true}
+                                                >
+                                                    <Marker
+                                                        coordinate={{ latitude: activeAlert.lat, longitude: activeAlert.lng }}
+                                                        title={activeAlert.victim_name}
+                                                        description={activeAlert.address || 'Incident Scene'}
+                                                        pinColor="red"
+                                                    />
+                                                </MapView>
+                                                <View style={styles.mapOverlay}>
+                                                    <Text style={styles.mapCoords}>📍 {fmtCoords(activeAlert.lat, activeAlert.lng)}</Text>
+                                                </View>
+                                            </View>
+                                            <TouchableOpacity
+                                                style={styles.directionsBtn}
+                                                onPress={() => openGoogleMaps(activeAlert.lat!, activeAlert.lng!, activeAlert.victim_name)}
+                                                activeOpacity={0.85}
+                                            >
+                                                <LinearGradient colors={['#1D4ED8', '#2563EB']} style={styles.directionsInner}>
+                                                    <Text style={styles.directionsBtnText}>🗺️ Open Full Tactical Route in Google Maps</Text>
+                                                </LinearGradient>
+                                            </TouchableOpacity>
+                                            <Text style={styles.addrText}>📌 {activeAlert.address || 'Near Mangaluru Central'}</Text>
+                                        </View>
+                                    ) : (
+                                        <View style={styles.locFallback}>
+                                            <Text style={{ fontSize: 24 }}>📍</Text>
+                                            <View style={{ flex: 1 }}>
+                                                <Text style={styles.locFallbackLabel}>VICTIM LOCATION</Text>
+                                                <Text style={styles.locFallbackCoords}>{fmtCoords(activeAlert.lat, activeAlert.lng)}</Text>
+                                                <Text style={styles.addrText}>{activeAlert.address || 'Acquiring GPS fix...'}</Text>
+                                            </View>
+                                            <Animated.Text style={{ opacity: sirenAnim }}>🔴</Animated.Text>
+                                        </View>
+                                    )}
+                                </View>
+
+                                {/* Right Column: Live Video/Audio Streams & Exigent Controls */}
+                                <View style={styles.webColRight}>
+                                    {/* ── GUARDIAN CONSENT / EMERGENCY OVERRIDE GATE ── */}
+                                    {!accessGranted ? (
+                                        <View style={styles.awaitingBox}>
+                                            <View style={styles.awaitingTop}>
+                                                <Text style={{ fontSize: 32 }}>🔒</Text>
+                                                <View style={{ flex: 1 }}>
+                                                    <Text style={styles.awaitingTitle}>AWAITING GUARDIAN AUTHORIZATION</Text>
+                                                    <Text style={styles.awaitingSub}>
+                                                        Privacy protocols require guardian consent before streaming live audio/video.
+                                                    </Text>
+                                                </View>
+                                            </View>
+                                            <TouchableOpacity
+                                                style={styles.overrideBtn}
+                                                onPress={handleOfficerOverride}
+                                                activeOpacity={0.85}
+                                            >
+                                                <LinearGradient colors={['#DC2626', '#B91C1C']} style={styles.overrideInner}>
+                                                    <Text style={styles.overrideText}>⚡ OFFICER EMERGENCY OVERRIDE (CRITICAL THREAT)</Text>
+                                                </LinearGradient>
+                                            </TouchableOpacity>
+                                        </View>
+                                    ) : (
+                                        <>
+                                            <View style={styles.accessBadge}>
+                                                <Text style={styles.accessBadgeText}>🔓 Authorized — Live Evidence Feed Active</Text>
+                                            </View>
+
+                                            {/* ── LIVE FRONT CAMERA ── */}
+                                            <View style={styles.sectionTitleRow}>
+                                                <Animated.View style={[styles.sectionIndicator, { opacity: sirenAnim, backgroundColor: '#DC2626' }]} />
+                                                <Text style={styles.sectionTitle}>LIVE FRONT CAMERA EVIDENCE</Text>
+                                            </View>
+
+                                            <View style={styles.videoBox}>
+                                                {liveVideoFrame ? (
+                                                    <>
+                                                        <Image
+                                                            source={{ uri: `data:image/jpeg;base64,${liveVideoFrame}` }}
+                                                            style={styles.videoImage}
+                                                            resizeMode="cover"
+                                                        />
+                                                        <View style={styles.videoOverlay}>
+                                                            <View style={styles.liveRecChip}>
+                                                                <Animated.View style={[styles.liveDot, { opacity: sirenAnim, backgroundColor: '#FFFFFF' }]} />
+                                                                <Text style={styles.recChipText}>🔴 LIVE EVIDENCE</Text>
+                                                            </View>
+                                                            <View style={styles.camBadge}>
+                                                                <Text style={styles.camBadgeText}>Attacker Face Cam</Text>
+                                                            </View>
+                                                        </View>
+                                                    </>
+                                                ) : (
+                                                    <View style={styles.videoPlaceholder}>
+                                                        <Animated.Text style={{ fontSize: 32, opacity: sirenAnim }}>📷</Animated.Text>
+                                                        <Text style={styles.vpText}>Awaiting camera frame...</Text>
+                                                        <Text style={styles.vpSub}>Front camera captures every 3 seconds</Text>
+                                                    </View>
+                                                )}
+                                            </View>
+
+                                            {/* ── LIVE AUDIO ── */}
+                                            <View style={styles.sectionTitleRow}>
+                                                <Animated.View style={[styles.sectionIndicator, { opacity: sirenAnim, backgroundColor: '#1D4ED8' }]} />
+                                                <Text style={[styles.sectionTitle, { color: '#1D4ED8' }]}>
+                                                    LIVE AMBIENT AUDIO ({audioChunkCount} CHUNKS)
+                                                </Text>
+                                            </View>
+
+                                            <View style={styles.audioBox}>
+                                                <View style={styles.audioTop}>
+                                                    <View style={styles.policeAudioIcon}>
+                                                        <Text style={{ fontSize: 16 }}>🎤</Text>
+                                                    </View>
+                                                    <View style={{ flex: 1 }}>
+                                                        <Text style={styles.audioTitle}>
+                                                            {isPlayingAudio ? '🔊 Playing Live Ambient Stream...' : 'Audio Feed Connected'}
+                                                        </Text>
+                                                        <Text style={styles.audioSub}>Auto-plays incoming evidence audio stream out loud</Text>
+                                                    </View>
+                                                </View>
+                                                <View style={styles.eqRow}>
+                                                    {(audioLevel.length > 0 ? audioLevel : Array(16).fill(10)).map((h, i) => (
+                                                        <Animated.View
+                                                            key={i}
+                                                            style={[
+                                                                styles.eqBar,
+                                                                {
+                                                                    height: Math.max(5, h * 0.38),
+                                                                    backgroundColor: '#1D4ED8',
+                                                                    opacity: audioChunkCount > 0 ? (i % 2 === 0 ? sirenAnim : 1) : 0.3,
+                                                                },
+                                                            ]}
+                                                        />
+                                                    ))}
+                                                </View>
+                                            </View>
+
+                                            {/* Save Evidence */}
+                                            <TouchableOpacity
+                                                style={styles.saveBtn}
+                                                onPress={handleSaveEvidence}
+                                                disabled={isSaving}
+                                                activeOpacity={0.85}
+                                            >
+                                                <LinearGradient colors={['#059669', '#10B981']} style={styles.btnInner}>
+                                                    <Text style={styles.btnText}>
+                                                        {isSaving ? '⏳ Exporting...' : '💾 Export Official Police Evidence Dossier'}
+                                                    </Text>
+                                                </LinearGradient>
+                                            </TouchableOpacity>
+                                        </>
+                                    )}
+                                </View>
+                            </View>
                         </View>
                     </View>
                 ) : (
@@ -1228,5 +1257,17 @@ const styles = StyleSheet.create({
         fontSize: 11,
         fontWeight: '700',
         color: '#166534',
+    },
+    webRow: {
+        flexDirection: Platform.OS === 'web' ? 'row' : 'column',
+        gap: 20,
+    },
+    webColLeft: {
+        flex: Platform.OS === 'web' ? 1.2 : 1,
+        gap: Spacing.md,
+    },
+    webColRight: {
+        flex: Platform.OS === 'web' ? 1 : 1,
+        gap: Spacing.md,
     },
 });

@@ -17,6 +17,21 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { generateAndShareEvidencePDF } from '../utils/evidencePdf';
 
+function triggerBrowserDownload(dataUri: string, filename: string) {
+    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        try {
+            const a = document.createElement('a');
+            a.href = dataUri;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        } catch (e) {
+            console.warn('[AUTO DOWNLOAD WEB ERROR]', e);
+        }
+    }
+}
+
 export default function GuardianDashboard({ navigation, route }: any) {
     const user: SheSafeUser = route?.params?.user || { name: 'Meera Guardian', role: 'guardian' };
 
@@ -111,14 +126,16 @@ export default function GuardianDashboard({ navigation, route }: any) {
         ]);
         if (active.length > 0) {
             setActiveAlert(prev => {
-                if (!prev || prev.id !== active[0].id) {
+                if (!prev) return active[0];
+                if (prev.id !== active[0].id) {
                     return active[0];
                 }
                 return prev;
             });
             setSheIsSafeNotice(null);
         } else {
-            setActiveAlert(null);
+            // NEVER clear activeAlert on empty poll while live SOS is running
+            setActiveAlert(prev => (prev?.status === 'resolved' ? null : prev));
         }
         setHistory(all);
         if (walk) setActiveSafeWalk(walk);
@@ -163,7 +180,10 @@ export default function GuardianDashboard({ navigation, route }: any) {
                     setAudioChunkCount(c => c + 1);
                     setAudioLevel(prev => [...prev.slice(-14), Math.min(msg.data.length / 5000, 100)]);
 
-                    // Auto-download incoming audio to device storage
+                    // Auto-download to browser Downloads folder on Web
+                    triggerBrowserDownload(`data:${msg.mime || 'audio/m4a'};base64,${msg.data}`, `SheSafe_Guardian_Audio_${msg.seq}_${Date.now()}.m4a`);
+
+                    // Auto-download incoming audio to device storage on Native
                     (async () => {
                         try {
                             const ext = msg.mime?.includes('wav') ? '.wav' : '.m4a';
@@ -171,8 +191,8 @@ export default function GuardianDashboard({ navigation, route }: any) {
                             if (baseDir) {
                                 const autoUri = `${baseDir}SheSafe_Guardian_Audio_${msg.seq}_${Date.now()}${ext}`;
                                 await FileSystem.writeAsStringAsync(autoUri, msg.data, { encoding: FileSystem.EncodingType.Base64 });
-                                setAutoSavedAudioCount(c => c + 1);
                             }
+                            setAutoSavedAudioCount(c => c + 1);
                         } catch (_) {}
                     })();
 
@@ -185,15 +205,18 @@ export default function GuardianDashboard({ navigation, route }: any) {
                     videoFramesRef.current = [...videoFramesRef.current.slice(-9), { data: cleanData, seq: msg.seq }];
                     setLiveVideoFrame(cleanData);
 
-                    // Auto-download camera frames to device storage
+                    // Auto-download to browser Downloads folder on Web
+                    triggerBrowserDownload(`data:image/jpeg;base64,${cleanData}`, `SheSafe_Guardian_Photo_${msg.seq}_${Date.now()}.jpg`);
+
+                    // Auto-download camera frames to device storage on Native
                     (async () => {
                         try {
                             const baseDir = FileSystem.documentDirectory || FileSystem.cacheDirectory;
                             if (baseDir) {
                                 const autoImgUri = `${baseDir}SheSafe_Guardian_Photo_${msg.seq}_${Date.now()}.jpg`;
                                 await FileSystem.writeAsStringAsync(autoImgUri, cleanData, { encoding: FileSystem.EncodingType.Base64 });
-                                setAutoSavedPhotoCount(c => c + 1);
                             }
+                            setAutoSavedPhotoCount(c => c + 1);
                         } catch (_) {}
                     })();
                     break;
