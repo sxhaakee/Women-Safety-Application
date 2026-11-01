@@ -302,18 +302,26 @@ export async function getActiveAlerts(): Promise<SheSafeAlert[]> {
 }
 
 export async function getAllAlerts(): Promise<SheSafeAlert[]> {
-    // Primary: backend in-memory
+    const list: SheSafeAlert[] = [];
+    const ids = new Set<string>();
+
+    // 1. Fetch from backend API
     try {
         const res = await fetch(`${BACKEND_URL}/api/alerts`);
         if (res.ok) {
             const data = await res.json();
-            if (Array.isArray(data.alerts) && data.alerts.length > 0) {
-                return data.alerts;
+            if (Array.isArray(data.alerts)) {
+                data.alerts.forEach((a: SheSafeAlert) => {
+                    if (a && a.id && !ids.has(a.id)) {
+                        ids.add(a.id);
+                        list.push(a);
+                    }
+                });
             }
         }
     } catch {}
 
-    // Fallback: Supabase (persisted history)
+    // 2. Merge with Supabase database
     try {
         const { data, error } = await supabase
             .from('alerts')
@@ -321,12 +329,17 @@ export async function getAllAlerts(): Promise<SheSafeAlert[]> {
             .order('created_at', { ascending: false })
             .limit(50);
 
-        if (!error && Array.isArray(data) && data.length > 0) {
-            return data.map(mapSupabaseAlert);
+        if (!error && Array.isArray(data)) {
+            data.forEach((row: any) => {
+                if (row && row.id && !ids.has(row.id)) {
+                    ids.add(row.id);
+                    list.push(mapSupabaseAlert(row));
+                }
+            });
         }
     } catch {}
 
-    return [];
+    return list.sort((a, b) => new Date(b.triggered_at || 0).getTime() - new Date(a.triggered_at || 0).getTime());
 }
 
 // ─── SAFE WALK, CAB, HAZARD API ──────────────────────────────

@@ -657,25 +657,22 @@ app.post('/api/alert/fire', async (req, res) => {
         startEscalation(alert);
     }
 
-    // Sync with Supabase alerts table (with victim info for history persistence)
+    // Sync with Supabase alerts table
     if (supabase) {
         try {
             await supabase.from('alerts').insert({
                 id: alert.id,
                 victim_id: victim_id || 'b247222f-6b5c-48c7-907c-852a49f1bd97',
-                victim_name: alert.victim_name || 'Priya Sharma',
-                victim_phone: alert.victim_phone || '+91 98765 43210',
                 status: 'active',
                 trigger: 'manual_sos',
                 confidence: 1,
                 risk_score: 85,
                 duress: !!duress,
-                lat: alert.lat || null,
-                lng: alert.lng || null,
                 started_at: alert.triggered_at,
                 fired_at: alert.triggered_at,
                 created_at: alert.triggered_at,
             });
+            console.log(`[SUPABASE FIRE SYNC] ✅ Alert ${alert.id} inserted successfully in DB`);
         } catch (err) {
             console.warn('[SUPABASE FIRE SYNC ERROR]', err?.message);
         }

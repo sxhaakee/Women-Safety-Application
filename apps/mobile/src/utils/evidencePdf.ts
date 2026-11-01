@@ -55,11 +55,17 @@ export async function generateAndShareEvidencePDF({
     allImages.push(frameBase64);
   }
 
+  const formatImgSrc = (img: string) => {
+    if (!img) return '';
+    if (img.startsWith('http://') || img.startsWith('https://') || img.startsWith('data:')) return img;
+    return `data:image/jpeg;base64,${img.replace(/[\r\n\s]/g, '')}`;
+  };
+
   const imageHtml = allImages.length > 0
     ? `<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin: 15px 0;">
         ${allImages.map((imgB64, idx) => `
           <div style="text-align: center; background: #F8FAFC; border: 1.5px solid #CBD5E1; border-radius: 8px; padding: 10px;">
-            <img src="data:image/jpeg;base64,${imgB64}" style="max-width: 100%; height: 160px; object-fit: cover; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" />
+            <img src="${formatImgSrc(imgB64)}" style="max-width: 100%; height: 160px; object-fit: cover; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" />
             <div style="font-size: 11px; color: #475569; margin-top: 6px; font-weight: 600;">
               Evidence Capture #${idx + 1} · SHA-256 Verified
             </div>

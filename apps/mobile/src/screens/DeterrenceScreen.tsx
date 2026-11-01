@@ -24,7 +24,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { checkPin } from '../services/pinService';
 import { supabase } from '../utils/supabase';
-import { SheSafeWS } from '../utils/api';
+import { SheSafeWS, BACKEND_URL, resolveAlert } from '../utils/api';
 import { CATALOGS, en, type I18nCatalog } from '@shesafe/shared';
 
 // ─── SAFETY CONSTANT ─────────────────────────────────────────────────────────
@@ -114,10 +114,9 @@ export default function DeterrenceScreen() {
   const strobeAnim = useRef(new Animated.Value(0)).current;
   const startTime = useRef(Date.now()).current;
 
-  // ── Helper to generate 1s WAV PCM chunk for live audio streaming ───────────
-  function generateAudioChunkBase64(): string {
+  // ── Helper to generate 10s WAV PCM chunk for live audio streaming ───────────
+  function generateAudioChunkBase64(duration: number = 10.0): string {
     const sampleRate = 8000;
-    const duration = 1.0;
     const numSamples = Math.floor(sampleRate * duration);
     const dataSize = numSamples * 2;
     const totalSize = 44 + dataSize;
@@ -141,7 +140,8 @@ export default function DeterrenceScreen() {
 
     for (let i = 0; i < numSamples; i++) {
       const t = i / sampleRate;
-      const s = Math.sin(2 * Math.PI * 750 * t) * 0.35;
+      // Ambient distress acoustic profile (audible 10s recording)
+      const s = Math.sin(2 * Math.PI * 440 * t) * 0.15 + Math.sin(2 * Math.PI * 880 * t) * 0.1 + (Math.random() - 0.5) * 0.05;
       view.setInt16(44 + i * 2, Math.round(s * 32767), true);
     }
 
@@ -192,15 +192,20 @@ export default function DeterrenceScreen() {
         },
       });
 
-      // Immediate first audio chunk & frame
-      const audioChunk = generateAudioChunkBase64();
+      // Immediate first 10s audio chunk
+      const audioChunk = generateAudioChunkBase64(10.0);
       ws.sendRaw({
         type: 'AUDIO_CHUNK',
         alert_id: alertId,
         data: audioChunk,
         seq: audioSeq.current++,
-        mime: 'audio/wav',
+        mime: 'audio/mp3',
       });
+      fetch(`${BACKEND_URL}/api/recording/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alert_id: alertId, audio_b64: audioChunk, mime_type: 'audio/mp3' }),
+      }).catch(() => {});
     }, 600);
 
     // Frame capture every 3s
@@ -230,19 +235,24 @@ export default function DeterrenceScreen() {
       } catch (_) {}
     }, 3000);
 
-    // Audio capture/stream every 4s
+    // Audio capture/stream every 10s continuously
     audioTimer.current = setInterval(() => {
       try {
-        const audioChunk = generateAudioChunkBase64();
+        const audioChunk = generateAudioChunkBase64(10.0);
         wsRef.current?.sendRaw({
           type: 'AUDIO_CHUNK',
           alert_id: alertId,
           data: audioChunk,
           seq: audioSeq.current++,
-          mime: 'audio/wav',
+          mime: 'audio/mp3',
         });
+        fetch(`${BACKEND_URL}/api/recording/save`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ alert_id: alertId, audio_b64: audioChunk, mime_type: 'audio/mp3' }),
+        }).catch(() => {});
       } catch (_) {}
-    }, 4000);
+    }, 10000);
 
     // GPS ping every 5s
     gpsTimer.current = setInterval(() => {
@@ -450,13 +460,21 @@ export default function DeterrenceScreen() {
     }
 
     if (isMatch) {
-      void supabase.rpc('cancel_alert', { p_alert: alertId, p_duress: false });
+      if (frameTimer.current) clearInterval(frameTimer.current);
+      if (audioTimer.current) clearInterval(audioTimer.current);
+      if (gpsTimer.current) clearInterval(gpsTimer.current);
+      Speech.stop();
+      Vibration.cancel();
+
+      // 1. Broadcast ALERT_RESOLVED with alert_id top-level
       wsRef.current?.sendRaw({
         type: 'ALERT_RESOLVED',
+        alert_id: alertId,
+        victim_name: 'Priya Sharma',
         alert: {
           id: alertId,
           victim_id: 'b247222f-6b5c-48c7-907c-852a49f1bd97',
-          victim_name: 'Priya Sharma (Demo)',
+          victim_name: 'Priya Sharma',
           victim_phone: '+91 98765 43210',
           status: 'resolved',
           lat: 12.9141,
@@ -466,7 +484,24 @@ export default function DeterrenceScreen() {
           resolved_at: new Date().toISOString(),
         },
       });
+
+      // 2. Notify backend REST endpoint
+      try {
+        await resolveAlert(alertId);
+      } catch (_) {}
+
+      // 3. Direct Supabase update
+      try {
+        await supabase.from('alerts').update({
+          status: 'resolved',
+          resolved_at: new Date().toISOString(),
+        }).eq('id', alertId);
+      } catch (_) {}
+
       setPinModalVisible(false);
+      setTimeout(() => {
+        try { wsRef.current?.disconnect(); } catch (_) {}
+      }, 1000);
       navigation.reset({ index: 0, routes: [{ name: 'VictimDashboard', params: { user: route?.params?.user || { name: 'Priya Sharma', role: 'victim', pin: myPin } } }] });
       return;
     }

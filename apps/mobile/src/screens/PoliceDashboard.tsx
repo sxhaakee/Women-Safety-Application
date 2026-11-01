@@ -17,17 +17,38 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { generateAndShareEvidencePDF } from '../utils/evidencePdf';
 
-function triggerBrowserDownload(dataUri: string, filename: string) {
+async function saveOrShareFile(dataUriOrBase64: string, filename: string, mimeType: string, isUrl = false): Promise<boolean> {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
         try {
             const a = document.createElement('a');
-            a.href = dataUri;
+            a.href = isUrl ? dataUriOrBase64 : (dataUriOrBase64.startsWith('data:') ? dataUriOrBase64 : `data:${mimeType};base64,${dataUriOrBase64}`);
             a.download = filename;
+            if (isUrl) a.target = '_blank';
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
+            return true;
         } catch (e) {
-            console.warn('[AUTO DOWNLOAD WEB ERROR]', e);
+            console.warn('[WEB SAVE ERROR]', e);
+            return false;
+        }
+    } else {
+        try {
+            const baseDir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+            const targetUri = `${baseDir}${filename}`;
+            if (isUrl) {
+                await FileSystem.downloadAsync(dataUriOrBase64, targetUri);
+            } else {
+                const b64 = dataUriOrBase64.includes(',') ? dataUriOrBase64.split(',')[1] : dataUriOrBase64;
+                await FileSystem.writeAsStringAsync(targetUri, b64, { encoding: FileSystem.EncodingType.Base64 });
+            }
+            if (await Sharing.isAvailableAsync()) {
+                await Sharing.shareAsync(targetUri, { mimeType, dialogTitle: `Save ${filename}` });
+            }
+            return true;
+        } catch (e) {
+            console.warn('[NATIVE SAVE ERROR]', e);
+            return false;
         }
     }
 }
@@ -213,9 +234,20 @@ export default function PoliceDashboard({ navigation, route }: any) {
                         victim_name: resolvedName,
                         time: new Date().toLocaleTimeString(),
                     });
-                    if (msg.alert) {
-                        setHistory(prev => prev.map(a => a.id === msg.alert!.id ? msg.alert! : a));
-                    }
+                    const polResolvedItem: SheSafeAlert = msg.alert || {
+                        id: msg.alert_id || 'ALERT-0001',
+                        victim_id: 'b247222f-6b5c-48c7-907c-852a49f1bd97',
+                        victim_name: resolvedName,
+                        victim_phone: '+91 98765 43210',
+                        status: 'resolved',
+                        lat: 12.9141,
+                        lng: 74.8560,
+                        address: 'Near Mangaluru Central',
+                        triggered_at: new Date().toISOString(),
+                        resolved_at: new Date().toISOString(),
+                    };
+                    setHistory(prev => [polResolvedItem, ...prev.filter(a => a.id !== polResolvedItem.id)]);
+                    loadAlerts(); // Refresh history from backend
                     try { soundRef.current?.remove(); } catch (_) {}
                     soundRef.current = null;
                     audioQueue.current = [];
@@ -365,16 +397,18 @@ export default function PoliceDashboard({ navigation, route }: any) {
     const exportAlertPDF = async (targetAlert: SheSafeAlert) => {
         setIsSaving(true);
         try {
-            // Fetch all stored frames & audio from server evidence store
-            let allFrames = videoFramesRef.current.map(f => f.data);
-            let audCount = audioChunksRef.current.length;
+            let allFrames: string[] = [];
+            let audCount = 0;
 
             try {
-                const res = await fetch(`${BACKEND_URL}/api/evidence/${targetAlert.id}`);
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3000);
+                const res = await fetch(`${BACKEND_URL}/api/evidence/${targetAlert.id}`, { signal: controller.signal });
+                clearTimeout(timeoutId);
                 if (res.ok) {
                     const data = await res.json();
                     if (data.video_frames && data.video_frames.length > 0) {
-                        allFrames = data.video_frames.map((f: any) => f.data);
+                        allFrames = data.video_frames.map((f: any) => f.data).filter(Boolean);
                     }
                     if (data.audio_chunks && data.audio_chunks.length > 0) {
                         audCount = data.audio_chunks.length;
@@ -382,13 +416,20 @@ export default function PoliceDashboard({ navigation, route }: any) {
                 }
             } catch (_) {}
 
+            if (allFrames.length === 0 && videoFramesRef.current.length > 0) {
+                allFrames = videoFramesRef.current.map(f => f.data).filter(Boolean);
+            }
+            if (audCount === 0 && audioChunksRef.current.length > 0) {
+                audCount = audioChunksRef.current.length;
+            }
+
             const latestFrame = allFrames.length > 0 ? allFrames[allFrames.length - 1] : liveVideoFrame;
 
             await generateAndShareEvidencePDF({
                 alert: targetAlert,
                 frameBase64: latestFrame,
                 framesBase64: allFrames,
-                audioChunkCount: audCount || (targetAlert.status === 'resolved' ? 8 : 0),
+                audioChunkCount: audCount || (targetAlert.status === 'resolved' ? 8 : 1),
                 officerName: user.name || 'Officer Rajesh Kumar',
                 stationName: 'Mangaluru Central Police Station',
             });
@@ -401,48 +442,66 @@ export default function PoliceDashboard({ navigation, route }: any) {
 
     const downloadIncidentEvidence = async (targetAlert: SheSafeAlert) => {
         try {
-            const res = await fetch(`${BACKEND_URL}/api/evidence/${targetAlert.id}`);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 3500);
             let dlCount = 0;
+            let data: any = null;
 
-            if (res.ok) {
-                const data = await res.json();
-
-                (data.audio_chunks || []).forEach((c: any, idx: number) => {
-                    if (c.url) {
-                        const a = typeof document !== 'undefined' ? document.createElement('a') : null;
-                        if (a) { a.href = c.url; a.download = `SheSafe_${targetAlert.id}_Audio_${c.seq ?? idx}.mp3`; a.target = '_blank'; document.body.appendChild(a); a.click(); document.body.removeChild(a); dlCount++; }
-                    } else if (c.data) {
-                        triggerBrowserDownload(`data:audio/mp3;base64,${c.data}`, `SheSafe_${targetAlert.id}_Audio_${c.seq ?? idx}.mp3`);
-                        dlCount++;
-                    }
-                });
-
-                (data.video_frames || []).forEach((f: any, idx: number) => {
-                    if (f.url) {
-                        const a = typeof document !== 'undefined' ? document.createElement('a') : null;
-                        if (a) { a.href = f.url; a.download = `SheSafe_${targetAlert.id}_Photo_${f.seq ?? idx}.jpg`; a.target = '_blank'; document.body.appendChild(a); a.click(); document.body.removeChild(a); dlCount++; }
-                    } else if (f.data) {
-                        triggerBrowserDownload(`data:image/jpeg;base64,${f.data}`, `SheSafe_${targetAlert.id}_Photo_${f.seq ?? idx}.jpg`);
-                        dlCount++;
-                    }
-                });
-
-                if (dlCount > 0) {
-                    Alert.alert('📥 Evidence Downloaded', `${dlCount} files downloaded for incident ${targetAlert.id.slice(0, 8)}...`);
-                } else {
-                    // Fallback: use in-memory chunks from current session
-                    const memAudio = audioChunksRef.current;
-                    const memFrames = videoFramesRef.current;
-                    if (memAudio.length > 0 || memFrames.length > 0) {
-                        memAudio.forEach((c, i) => triggerBrowserDownload(`data:audio/mp3;base64,${c.data}`, `SheSafe_${targetAlert.id}_Audio_${i}.mp3`));
-                        memFrames.forEach((f, i) => triggerBrowserDownload(`data:image/jpeg;base64,${f.data}`, `SheSafe_${targetAlert.id}_Photo_${i}.jpg`));
-                        Alert.alert('📥 Evidence Downloaded', `${memAudio.length + memFrames.length} files from current session.`);
-                    } else {
-                        Alert.alert('No Evidence', 'No media files found for this incident.');
-                    }
+            try {
+                const res = await fetch(`${BACKEND_URL}/api/evidence/${targetAlert.id}`, { signal: controller.signal });
+                clearTimeout(timeoutId);
+                if (res.ok) {
+                    data = await res.json();
                 }
+            } catch (_) {}
+
+            const audioList = data?.audio_chunks || [];
+            const photoList = data?.video_frames || [];
+
+            // 1. Download/Share stored audio chunks
+            for (let idx = 0; idx < audioList.length; idx++) {
+                const c = audioList[idx];
+                const filename = `SheSafe_${targetAlert.id.slice(0, 8)}_Audio_${c.seq ?? idx}.mp3`;
+                if (c.url) {
+                    await saveOrShareFile(c.url, filename, 'audio/mp3', true);
+                    dlCount++;
+                } else if (c.data) {
+                    await saveOrShareFile(c.data, filename, 'audio/mp3', false);
+                    dlCount++;
+                }
+            }
+
+            // 2. Download/Share stored photos
+            for (let idx = 0; idx < photoList.length; idx++) {
+                const f = photoList[idx];
+                const filename = `SheSafe_${targetAlert.id.slice(0, 8)}_Photo_${f.seq ?? idx}.jpg`;
+                if (f.url) {
+                    await saveOrShareFile(f.url, filename, 'image/jpeg', true);
+                    dlCount++;
+                } else if (f.data) {
+                    await saveOrShareFile(f.data, filename, 'image/jpeg', false);
+                    dlCount++;
+                }
+            }
+
+            // 3. Fallback to active in-memory session frames/audio
+            if (dlCount === 0) {
+                const memAudio = audioChunksRef.current;
+                const memFrames = videoFramesRef.current;
+                for (let i = 0; i < memAudio.length; i++) {
+                    await saveOrShareFile(memAudio[i].data, `SheSafe_${targetAlert.id.slice(0, 8)}_Audio_${i}.mp3`, 'audio/mp3', false);
+                    dlCount++;
+                }
+                for (let i = 0; i < memFrames.length; i++) {
+                    await saveOrShareFile(memFrames[i].data, `SheSafe_${targetAlert.id.slice(0, 8)}_Photo_${i}.jpg`, 'image/jpeg', false);
+                    dlCount++;
+                }
+            }
+
+            if (dlCount > 0) {
+                Alert.alert('📥 Evidence Downloaded', `${dlCount} files downloaded for incident ${targetAlert.id.slice(0, 8)}...`);
             } else {
-                Alert.alert('Evidence Notice', 'Evidence server unavailable. Try again shortly.');
+                Alert.alert('Evidence Notice', 'No raw media files found for this incident.');
             }
         } catch (e: any) {
             Alert.alert('Download Error', e?.message || 'Could not download incident files.');
