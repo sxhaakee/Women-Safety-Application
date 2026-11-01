@@ -399,17 +399,31 @@ wss.on('connection', (ws, req) => {
         // ── ALERT_RESOLVED / CANCEL_ALERT (victim safe PIN entered) ──
         if (msg.type === 'ALERT_RESOLVED' || msg.type === 'CANCEL_ALERT') {
             const targetId = msg.alert_id || msg.alert?.id;
-            const alert = alerts.find(a => a.id === targetId) || alerts.find(a => a.status === 'active');
-            if (alert) {
-                alert.status = 'resolved';
-                alert.resolved_at = new Date().toISOString();
-                stopEscalation(alert.id);
-                console.log(`[WS ${mt}] 🛑 ALERT ${alert.id} RESOLVED BY VICTIM PIN`);
-                broadcastAll({ type: 'ALERT_RESOLVED', alert_id: alert.id, alert });
-            } else {
-                console.log(`[WS ${mt}] 🛑 ALERT ${targetId || 'active'} RESOLVED (broadcasted)`);
-                broadcastAll({ type: 'ALERT_RESOLVED', alert_id: targetId || 'ALERT-0001', alert: { id: targetId || 'ALERT-0001', status: 'resolved' } });
+            let resolvedAlert = null;
+            alerts.forEach(a => {
+                if (!targetId || a.id === targetId || a.status === 'active') {
+                    a.status = 'resolved';
+                    a.resolved_at = new Date().toISOString();
+                    stopEscalation(a.id);
+                    if (!resolvedAlert) resolvedAlert = a;
+                }
+            });
+            if (!resolvedAlert) {
+                resolvedAlert = { id: targetId || 'ALERT-0001', status: 'resolved', victim_name: msg.victim_name || 'Priya Sharma' };
             }
+            if (supabase) {
+                supabase.from('alerts').update({
+                    status: 'resolved',
+                    resolved_at: new Date().toISOString(),
+                }).eq('status', 'active').catch(() => {});
+            }
+            console.log(`[WS ${mt}] 🛑 ALL ACTIVE ALERTS RESOLVED BY VICTIM PIN (${resolvedAlert.id})`);
+            broadcastAll({
+                type: 'ALERT_RESOLVED',
+                alert_id: resolvedAlert.id,
+                victim_name: resolvedAlert.victim_name || 'Priya Sharma',
+                alert: resolvedAlert,
+            });
             return;
         }
 

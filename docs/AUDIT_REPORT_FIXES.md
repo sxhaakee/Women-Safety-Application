@@ -76,6 +76,55 @@
 
 ---
 
+---
+
+### Issue G: Interactive OpenStreetMap & Leaflet Map on Web
+* **Problem:** In browser/web view on `PoliceDashboard` and `GuardianDashboard`, the map showed a dark placeholder stating *"Map view is optimized for iOS / Android via Expo Go"*.
+* **Implementation & Fix:**
+  * Rebuilt [`apps/mobile/src/components/SafeMapView.web.tsx`](file:///Users/mohammedshakeeb/Desktop/shesafe%202/apps/mobile/src/components/SafeMapView.web.tsx) using **Leaflet.js (v1.9.4)** and **OpenStreetMap** tile layers within an isolated HTML iframe container.
+  * Added dynamic marker rendering with color coding (Green: Start, Red: Critical Incident, Yellow: Hazard), auto-popup labels, and interactive zoom/pan controls.
+  * Added route polylines rendering for Safe Walk and Cab Guardian routes directly on OpenStreetMap tiles.
+  * Configured responsive full-width and min-height CSS layout so the tactical map displays seamlessly on desktop browsers.
+
+---
+
+### Issue H: Full 10-Second Web Audio Recording (.mp3)
+* **Problem:** On Expo Web, `expo-audio` produced empty or 1-second truncated chunks because native Web `MediaRecorder` buffers were not cleanly aggregated over the 10-second capture window.
+* **Implementation & Fix:**
+  * Implemented browser-native `navigator.mediaDevices.getUserMedia({ audio: true })` with `MediaRecorder` in [`apps/mobile/src/screens/AlertFiredScreen.tsx`](file:///Users/mohammedshakeeb/Desktop/shesafe%202/apps/mobile/src/screens/AlertFiredScreen.tsx).
+  * Audio is accumulated over full 10,000ms intervals, converted via `FileReader` into `audio/mp3` Base64 chunks (approx 21 KB each), and transmitted over WebSocket to Guardian and Police.
+  * Native audio streams are played out loud on Guardian and Police devices via `expo-audio` / HTML Audio element and auto-downloaded with naming `SheSafe_<alert_id>_Audio_<seq>.mp3`.
+
+---
+
+### Issue I: Supabase Storage Evidence Bucket & Incident Dossier Downloads
+* **Problem:** Evidence photos and audio recordings needed to be stored securely in the cloud and downloadable by both Police and Guardian from past incident history.
+* **Implementation & Fix:**
+  * In [`backend/server.js`](file:///Users/mohammedshakeeb/Desktop/shesafe%202/backend/server.js), configured Supabase storage bucket `evidence` with public access via Supabase Service Role client.
+  * Incoming audio chunks and video frames are uploaded to `evidence/${alert_id}/audio_${seq}.mp3` and `evidence/${alert_id}/frame_${seq}.jpg`.
+  * Added REST endpoint `GET /api/evidence/:alertId` returning all stored frames, audio chunks, and Supabase public URLs.
+  * In [`apps/mobile/src/screens/GuardianDashboard.tsx`](file:///Users/mohammedshakeeb/Desktop/shesafe%202/apps/mobile/src/screens/GuardianDashboard.tsx) and [`apps/mobile/src/screens/PoliceDashboard.tsx`](file:///Users/mohammedshakeeb/Desktop/shesafe%202/apps/mobile/src/screens/PoliceDashboard.tsx), added dual action buttons on all incident history cards:
+    * **`[📄 PDF Report]`**: Compiles and exports an official multi-page evidence PDF dossier containing all captured attacker photos, timestamps, GPS coordinates, and officer/guardian signatures.
+    * **`[💾 Download Evidence]`**: Automatically downloads all captured `.mp3` audio files and `.jpg` photos directly to the user's computer/phone.
+
+---
+
+### Issue J: Total Stand-Down on PIN Verification (No Critical Alert Reversion)
+* **Problem:** When the victim entered her PIN to mark herself safe, the 3-second polling interval in Guardian and Police dashboards could re-read stale active alerts and revert the screen back to high critical danger.
+* **Implementation & Fix:**
+  * In [`backend/server.js`](file:///Users/mohammedshakeeb/Desktop/shesafe%202/backend/server.js), updated both the WebSocket `ALERT_RESOLVED` handler and `POST /api/alert/resolve` to iterate through all active alerts in memory and Supabase, marking all of them as `resolved`.
+  * In Guardian and Police dashboards, receiving `ALERT_RESOLVED` clears `activeAlert`, halts sirens and audio playback, and mounts the green **`SHE IS SAFE — ALERT RESOLVED`** verification banner.
+
+---
+
+### Issue K: ML Safety Engine Architecture Documentation
+* **Implementation:** Created detailed architectural documentation in [`docs/ML_SAFETY_ENGINE_ARCHITECTURE.md`](file:///Users/mohammedshakeeb/Desktop/shesafe%202/docs/ML_SAFETY_ENGINE_ARCHITECTURE.md) covering:
+  * Sensor threshold calibration formula ($\tau = \text{clamp}(\mu - 2\sigma, 1.3, 2.8) \times (1 + 0.1 \times \text{falseTriggers})$).
+  * Multi-factor safety engine equations combining historical crime decay ($e^{-\lambda \Delta t}$), community hazards, off-route detour penalties, isolated zone weights, and diurnal circadian curves.
+  * A* risk-weighted dynamic rerouting algorithm.
+
+---
+
 ## 2. File Verification & Test Status
 
 | Component | Status | Details |
