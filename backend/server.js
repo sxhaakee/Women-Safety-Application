@@ -412,10 +412,16 @@ wss.on('connection', (ws, req) => {
                 resolvedAlert = { id: targetId || 'ALERT-0001', status: 'resolved', victim_name: msg.victim_name || 'Priya Sharma' };
             }
             if (supabase) {
-                supabase.from('alerts').update({
-                    status: 'resolved',
-                    resolved_at: new Date().toISOString(),
-                }).eq('status', 'active').catch(() => {});
+                (async () => {
+                    try {
+                        await supabase.from('alerts').update({
+                            status: 'resolved',
+                            resolved_at: new Date().toISOString(),
+                        }).eq('status', 'active');
+                    } catch (e) {
+                        console.warn('[SUPABASE UPDATE ERROR]', e?.message);
+                    }
+                })();
             }
             console.log(`[WS ${mt}] 🛑 ALL ACTIVE ALERTS RESOLVED BY VICTIM PIN (${resolvedAlert.id})`);
             broadcastAll({
@@ -582,7 +588,7 @@ app.post('/api/login', (req, res) => {
     res.json({ success: true, user });
 });
 
-app.post('/api/alert/fire', (req, res) => {
+app.post('/api/alert/fire', async (req, res) => {
     const { id, alert_id, victim_id, victim_name, victim_phone, lat, lng, address, duress } = req.body;
     const targetId = id || alert_id || `ALERT-${String(alertIdCounter++).padStart(4, '0')}`;
 
@@ -628,7 +634,7 @@ app.post('/api/alert/fire', (req, res) => {
     // Sync with Supabase alerts table
     if (supabase) {
         try {
-            supabase.from('alerts').insert({
+            await supabase.from('alerts').insert({
                 id: crypto.randomUUID(),
                 victim_id: victim_id || 'b247222f-6b5c-48c7-907c-852a49f1bd97',
                 status: 'active',
@@ -638,8 +644,10 @@ app.post('/api/alert/fire', (req, res) => {
                 duress: !!duress,
                 started_at: new Date().toISOString(),
                 fired_at: new Date().toISOString(),
-            }).catch(err => console.warn('[SUPABASE FIRE SYNC ERROR]', err?.message));
-        } catch (_) {}
+            });
+        } catch (err) {
+            console.warn('[SUPABASE FIRE SYNC ERROR]', err?.message);
+        }
     }
 
     res.json({ success: true, alert });
