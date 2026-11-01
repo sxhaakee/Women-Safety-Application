@@ -134,12 +134,16 @@ export default function GuardianDashboard({ navigation, route }: any) {
             });
             setSheIsSafeNotice(null);
         } else {
-            // NEVER clear activeAlert on empty poll while live SOS is running
-            setActiveAlert(prev => (prev?.status === 'resolved' ? null : prev));
+            // When no active alerts exist on backend / DB, clear activeAlert immediately
+            setActiveAlert(null);
         }
         setHistory(all);
-        if (walk) setActiveSafeWalk(walk);
-        if (ride) setActiveCabRide(ride);
+        if (walk) {
+            setActiveSafeWalk(walk);
+        }
+        if (ride) {
+            setActiveCabRide(ride);
+        }
         if (haz && haz.length > 0) setCommunityHazards(haz);
     };
 
@@ -414,16 +418,20 @@ export default function GuardianDashboard({ navigation, route }: any) {
             Alert.alert('No Active Incident', 'An active incident is required to generate an official report.');
             return;
         }
+        await exportAlertPDF(activeAlert);
+    };
+
+    const exportAlertPDF = async (targetAlert: SheSafeAlert) => {
         setIsSaving(true);
         try {
-            const latestFrame = videoFramesRef.current.length > 0
-                ? videoFramesRef.current[videoFramesRef.current.length - 1]!.data
-                : liveVideoFrame;
+            const allFrames = videoFramesRef.current.map(f => f.data);
+            const latestFrame = allFrames.length > 0 ? allFrames[allFrames.length - 1] : liveVideoFrame;
 
             await generateAndShareEvidencePDF({
-                alert: activeAlert,
+                alert: targetAlert,
                 frameBase64: latestFrame,
-                audioChunkCount: audioChunksRef.current.length,
+                framesBase64: allFrames,
+                audioChunkCount: audioChunksRef.current.length || (targetAlert.status === 'resolved' ? 8 : 0),
                 officerName: 'Guardian Verifier (Meera)',
                 stationName: 'Mangaluru Central Police Control Room',
             });
@@ -1000,10 +1008,18 @@ export default function GuardianDashboard({ navigation, route }: any) {
                                         </TouchableOpacity>
                                     )}
                                 </View>
-                                <View style={[styles.histStatus, { backgroundColor: a.status === 'active' ? '#FEE2E2' : '#DCFCE7' }]}>
-                                    <Text style={[styles.histStatusText, { color: a.status === 'active' ? '#DC2626' : '#16A34A' }]}>
-                                        {a.status.toUpperCase()}
-                                    </Text>
+                                <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                                    <View style={[styles.histStatus, { backgroundColor: a.status === 'active' ? '#FEE2E2' : '#DCFCE7' }]}>
+                                        <Text style={[styles.histStatusText, { color: a.status === 'active' ? '#DC2626' : '#16A34A' }]}>
+                                            {a.status.toUpperCase()}
+                                        </Text>
+                                    </View>
+                                    <TouchableOpacity
+                                        style={styles.histPdfBtn}
+                                        onPress={() => exportAlertPDF(a)}
+                                    >
+                                        <Text style={styles.histPdfBtnText}>📄 PDF Report</Text>
+                                    </TouchableOpacity>
                                 </View>
                             </View>
                         ))}
@@ -1317,6 +1333,19 @@ const styles = StyleSheet.create({
     histMapLink: { color: '#059669', fontSize: FontSizes.xs, marginTop: 2, fontWeight: '600' },
     histStatus: { paddingVertical: 4, paddingHorizontal: 8, borderRadius: BorderRadius.xs },
     histStatusText: { fontSize: 10, fontWeight: '800' },
+    histPdfBtn: {
+        backgroundColor: '#EFF6FF',
+        paddingVertical: 4,
+        paddingHorizontal: 8,
+        borderRadius: BorderRadius.xs,
+        borderWidth: 1,
+        borderColor: '#BFDBFE',
+    },
+    histPdfBtnText: {
+        fontSize: 10,
+        fontWeight: '700',
+        color: '#1D4ED8',
+    },
     sheSafeCard: {
         backgroundColor: '#F0FDF4',
         borderRadius: BorderRadius.xl,

@@ -10,6 +10,7 @@
  *
  * Uses `expo-print` to render HTML into a real PDF and `expo-sharing` to save or export.
  */
+import { Platform } from 'react-native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { SheSafeAlert } from './api';
@@ -17,6 +18,7 @@ import { SheSafeAlert } from './api';
 export interface EvidenceReportParams {
   alert: SheSafeAlert;
   frameBase64?: string | null;
+  framesBase64?: string[];
   audioChunkCount?: number;
   officerName?: string;
   stationName?: string;
@@ -25,6 +27,7 @@ export interface EvidenceReportParams {
 export async function generateAndShareEvidencePDF({
   alert,
   frameBase64,
+  framesBase64 = [],
   audioChunkCount = 0,
   officerName = 'Patrol Unit 04',
   stationName = 'Mangaluru Central Police Station',
@@ -41,12 +44,27 @@ export async function generateAndShareEvidencePDF({
     ? `https://maps.google.com/?q=${alert.lat},${alert.lng}`
     : 'https://maps.google.com/?q=12.9141,74.8560';
 
-  const imageHtml = frameBase64
-    ? `<div style="text-align: center; margin: 15px 0;">
-        <img src="data:image/jpeg;base64,${frameBase64}" style="max-width: 320px; max-height: 240px; border-radius: 8px; border: 2px solid #E2E8F0; box-shadow: 0 4px 6px rgba(0,0,0,0.1);" />
-        <div style="font-size: 11px; color: #64748B; margin-top: 6px;">
-          Front Camera Automatic Capture · Timestamp: ${alertDate} · Hash Verified
-        </div>
+  // Gather all unique images (frames array + single frame fallback)
+  const allImages: string[] = [];
+  if (framesBase64 && framesBase64.length > 0) {
+    framesBase64.forEach(f => {
+      if (f && !allImages.includes(f)) allImages.push(f);
+    });
+  }
+  if (frameBase64 && !allImages.includes(frameBase64)) {
+    allImages.push(frameBase64);
+  }
+
+  const imageHtml = allImages.length > 0
+    ? `<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin: 15px 0;">
+        ${allImages.map((imgB64, idx) => `
+          <div style="text-align: center; background: #F8FAFC; border: 1.5px solid #CBD5E1; border-radius: 8px; padding: 10px;">
+            <img src="data:image/jpeg;base64,${imgB64}" style="max-width: 100%; height: 160px; object-fit: cover; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" />
+            <div style="font-size: 11px; color: #475569; margin-top: 6px; font-weight: 600;">
+              Evidence Capture #${idx + 1} · SHA-256 Verified
+            </div>
+          </div>
+        `).join('')}
       </div>`
     : `<div style="background: #F1F5F9; border-radius: 8px; padding: 20px; text-align: center; color: #64748B; font-style: italic; margin: 15px 0;">
         Front camera stream active — No static snapshot captured at moment of export.
@@ -262,7 +280,21 @@ export async function generateAndShareEvidencePDF({
 </html>
   `;
 
-  // Generate PDF file directly on device
+  // Web platform: open formatted print preview window with auto-print & download to PDF
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    const printWindow = window.open('', '_blank');
+    if (printWindow) {
+      printWindow.document.write(html);
+      printWindow.document.close();
+      printWindow.focus();
+      setTimeout(() => {
+        printWindow.print();
+      }, 500);
+      return { uri: 'web-print' };
+    }
+  }
+
+  // Generate PDF file directly on device (iOS / Android)
   const { uri } = await Print.printToFileAsync({
     html,
     margins: {

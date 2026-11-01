@@ -307,7 +307,7 @@ export default function AlertFiredScreen({ navigation, route }: any) {
             await recorder.prepareToRecordAsync();
             recorder.record();
             const seq = audioSeq.current++;
-            console.log(`[AUDIO] 🎤 Recording chunk #${seq}...`);
+            console.log(`[AUDIO] 🎤 Recording chunk #${seq} (10s cadence)...`);
 
             audioTimer.current = setTimeout(async () => {
                 if (!mounted.current) return;
@@ -384,7 +384,7 @@ export default function AlertFiredScreen({ navigation, route }: any) {
                     console.warn('[AUDIO] Chunk error:', e?.message);
                 }
                 if (mounted.current) recordAudio();
-            }, 5000);
+            }, 10000);
         } catch (e: any) {
             console.warn('[AUDIO] Record start error:', e?.message);
             if (mounted.current) audioTimer.current = setTimeout(recordAudio, 2000);
@@ -430,14 +430,19 @@ export default function AlertFiredScreen({ navigation, route }: any) {
                     alert: { id: aid, status: 'resolved' },
                     victim_name: user?.name || 'Priya Sharma',
                 });
-                await resolveAlert(aid);
-                await outboxEnqueue('cancel', aid, {}, 0);
+                try {
+                    await resolveAlert(aid);
+                } catch (_) {}
+                try {
+                    await outboxEnqueue('cancel', aid, {}, 0);
+                } catch (_) {}
                 console.log('[PIN] 📡 Alert resolved on server + broadcasted');
+                // Give WS 1500ms to flush packets before disconnecting
                 setTimeout(() => {
                     wsRef.current?.disconnect();
-                }, 500);
+                }, 1500);
                 navigation.reset({ index: 0, routes: [{ name: 'VictimDashboard', params: { user } }] });
-            }, 800);
+            }, 500);
         } else {
             console.log('[PIN] ❌ Wrong PIN!');
             setPinError(true);

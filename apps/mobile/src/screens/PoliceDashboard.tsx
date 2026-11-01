@@ -130,8 +130,8 @@ export default function PoliceDashboard({ navigation, route }: any) {
             });
             setSheIsSafeNotice(null);
         } else {
-            // NEVER clear activeAlert on empty poll while live SOS is running
-            setActiveAlert(prev => (prev?.status === 'resolved' ? null : prev));
+            // When no active alerts exist on backend / DB, clear activeAlert immediately
+            setActiveAlert(null);
         }
         setHistory(all);
     };
@@ -387,16 +387,20 @@ export default function PoliceDashboard({ navigation, route }: any) {
             Alert.alert('No Active Incident', 'An active incident is required to generate an official report.');
             return;
         }
+        await exportAlertPDF(activeAlert);
+    };
+
+    const exportAlertPDF = async (targetAlert: SheSafeAlert) => {
         setIsSaving(true);
         try {
-            const latestFrame = videoFramesRef.current.length > 0
-                ? videoFramesRef.current[videoFramesRef.current.length - 1]!.data
-                : liveVideoFrame;
+            const allFrames = videoFramesRef.current.map(f => f.data);
+            const latestFrame = allFrames.length > 0 ? allFrames[allFrames.length - 1] : liveVideoFrame;
 
             await generateAndShareEvidencePDF({
-                alert: activeAlert,
+                alert: targetAlert,
                 frameBase64: latestFrame,
-                audioChunkCount: audioChunksRef.current.length,
+                framesBase64: allFrames,
+                audioChunkCount: audioChunksRef.current.length || (targetAlert.status === 'resolved' ? 8 : 0),
                 officerName: user.name || 'Officer Rajesh Kumar',
                 stationName: 'Mangaluru Central Police Station',
             });
@@ -849,10 +853,18 @@ export default function PoliceDashboard({ navigation, route }: any) {
                                         </TouchableOpacity>
                                     )}
                                 </View>
-                                <View style={[styles.histStatus, { backgroundColor: a.status === 'active' ? '#FEE2E2' : '#DCFCE7' }]}>
-                                    <Text style={[styles.histStatusText, { color: a.status === 'active' ? '#DC2626' : '#16A34A' }]}>
-                                        {a.status.toUpperCase()}
-                                    </Text>
+                                <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                                    <View style={[styles.histStatus, { backgroundColor: a.status === 'active' ? '#FEE2E2' : '#DCFCE7' }]}>
+                                        <Text style={[styles.histStatusText, { color: a.status === 'active' ? '#DC2626' : '#16A34A' }]}>
+                                            {a.status.toUpperCase()}
+                                        </Text>
+                                    </View>
+                                    <TouchableOpacity
+                                        style={styles.histPdfBtn}
+                                        onPress={() => exportAlertPDF(a)}
+                                    >
+                                        <Text style={styles.histPdfBtnText}>📄 PDF Report</Text>
+                                    </TouchableOpacity>
                                 </View>
                             </View>
                         ))}
@@ -926,25 +938,28 @@ const styles = StyleSheet.create({
         fontVariant: ['tabular-nums'],
     },
     scroll: {
-        padding: Spacing.md,
+        padding: Spacing.lg,
         paddingBottom: Spacing.xxl + 20,
-        gap: Spacing.md,
+        gap: Spacing.lg,
+        maxWidth: 1600,
+        width: '100%',
+        alignSelf: 'center',
     },
     alertCard: {
         backgroundColor: '#FFFFFF',
         borderRadius: BorderRadius.xl,
         overflow: 'hidden',
-        borderWidth: 1,
-        borderColor: '#BFDBFE',
-        shadowColor: '#0F172A',
-        shadowOpacity: 0.08,
-        shadowRadius: 16,
-        elevation: 4,
+        borderWidth: 1.5,
+        borderColor: '#93C5FD',
+        shadowColor: '#1E3A8A',
+        shadowOpacity: 0.12,
+        shadowRadius: 20,
+        elevation: 6,
     },
     alertBanner: {
-        paddingVertical: Spacing.md,
-        paddingHorizontal: Spacing.lg,
-        borderBottomWidth: 1,
+        paddingVertical: Spacing.lg,
+        paddingHorizontal: Spacing.xl,
+        borderBottomWidth: 1.5,
         borderBottomColor: '#BFDBFE',
         alignItems: 'center',
     },
@@ -989,7 +1004,7 @@ const styles = StyleSheet.create({
         overflow: 'hidden',
         borderWidth: 1.5,
         borderColor: '#E2E8F0',
-        height: 190,
+        height: Platform.OS === 'web' ? 340 : 190,
         position: 'relative',
     },
     map: { width: '100%', height: '100%' },
@@ -1049,7 +1064,7 @@ const styles = StyleSheet.create({
         overflow: 'hidden',
         borderWidth: 1.5,
         borderColor: '#CBD5E1',
-        height: 210,
+        height: Platform.OS === 'web' ? 320 : 210,
         backgroundColor: '#0F172A',
     },
     videoImage: { width: '100%', height: '100%' },
@@ -1154,6 +1169,19 @@ const styles = StyleSheet.create({
     histMapLink: { color: '#1D4ED8', fontSize: FontSizes.xs, marginTop: 2, fontWeight: '600' },
     histStatus: { paddingVertical: 4, paddingHorizontal: 8, borderRadius: BorderRadius.xs },
     histStatusText: { fontSize: 10, fontWeight: '800' },
+    histPdfBtn: {
+        backgroundColor: '#EFF6FF',
+        paddingVertical: 4,
+        paddingHorizontal: 8,
+        borderRadius: BorderRadius.xs,
+        borderWidth: 1,
+        borderColor: '#BFDBFE',
+    },
+    histPdfBtnText: {
+        fontSize: 10,
+        fontWeight: '700',
+        color: '#1D4ED8',
+    },
     liveDot: { width: 6, height: 6, borderRadius: 3 },
     mobileActionRow: { gap: 8, marginTop: 4 },
     dispatchBtn: { borderRadius: BorderRadius.md, overflow: 'hidden' },
