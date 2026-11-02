@@ -364,6 +364,7 @@ wss.on('connection', (ws, req) => {
             console.log(`[WS AUDIO ${mt}] 📡 → ${gSent} guardian(s)`);
 
             // Relay to police only if access already granted
+            const active = alerts.find(a => a.status === 'active');
             const isPoliceAuthorized =
                 policeAccessGrants[alert_id] ||
                 (active && policeAccessGrants[active.id]) ||
@@ -417,6 +418,7 @@ wss.on('connection', (ws, req) => {
             }
             console.log(`[WS VIDEO ${mt}] 📡 → ${gSent} guardian(s)`);
 
+            const active = alerts.find(a => a.status === 'active');
             const isPoliceAuthorized =
                 policeAccessGrants[alert_id] ||
                 (active && policeAccessGrants[active.id]) ||
